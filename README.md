@@ -1,13 +1,13 @@
 # Schmate
 
- שמאטע: Schmate* (Pronounced “SHMAH-teh)
+Project שמאטע: Schmate* (Pronounced “SHMAH-teh)
 
 Extending re-Isearch with vector datatypes for embeddings. Enabling a better dense passage retrieval (DPR) for retrieval augmented generation (RAG) and hybrid search.
 
 
 ## Abstract
 
-Project Schmate is tasked with the development of the evoliving next iteration of re-Isearch adding vector datatypes for embeddings. In contrast to typical vector stores the proposed Re-Isearch+Schmatte offers a full passage information retrieval system (index and retrieval) using a combination of dense and sparse vectors as well as structure. It is DPR and a whole lot more. It addresses the stumbling blocks of chunking, has a tight integration of ingest, tokenisation, a number of alternative vector stores and similarity algorithms and, above all, uses a novel combination of understanding document structure (implicit and explicit) to provide a better contextual passage retrieval to solve the problem of misaligned context. This builds on the observation that meaning is communicated through also structure so needs to be viewed in the context of structure. Structure as well as use of words in language are chosen to communicate and express rational thought. They are meant by the sender to be received.
+Schmate is the development name for the evolving next iteration of re-Isearch adding vector datatypes for embeddings. In contrast to typical vector stores the proposed Re-Isearch+Schmatte offers a full passage information retrieval system (index and retrieval) using a combination of dense and sparse vectors as well as structure. It is DPR and a whole lot more. It addresses the stumbling blocks of chunking, has a tight integration of ingest, tokenisation, a number of alternative vector stores and similarity algorithms and, above all, uses a novel combination of understanding document structure (implicit and explicit) to provide a better contextual passage retrieval to solve the problem of misaligned context. This builds on the observation that meaning is communicated through also structure so needs to be viewed in the context of structure. Structure as well as use of words in language are chosen to communicate and express rational thought. They are meant by the sender to be received.
 
 
 ## Project
