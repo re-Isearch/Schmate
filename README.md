@@ -10,7 +10,7 @@ Extending re-Isearch with vector datatypes for embeddings. Enabling a better den
 Project Schmate is tasked with the development of the evoliving next iteration of re-Isearch adding vector datatypes for embeddings. In contrast to typical vector stores the proposed Re-Isearch+Schmatte offers a full passage information retrieval system (index and retrieval) using a combination of dense and sparse vectors as well as structure. It is DPR and a whole lot more. It addresses the stumbling blocks of chunking, has a tight integration of ingest, tokenisation, a number of alternative vector stores and similarity algorithms and, above all, uses a novel combination of understanding document structure (implicit and explicit) to provide a better contextual passage retrieval to solve the problem of misaligned context. This builds on the observation that meaning is communicated through also structure so needs to be viewed in the context of structure. Structure as well as use of words in language are chosen to communicate and express rational thought. They are meant by the sender to be received.
 
 
-## 
+## Project
 
 Re-Isearch is a 100% open source (Apache 2.0) novel multimodal search and retrieval engine using mathematical models and algorithms different from the all-too-common inverted index. It is a kind of hybrid between full-text, XML, object and graph noSQL-db that natively ingests a wide range of document types and formats. It has been open-sourced through a grant from Nlnet/NGI-Zero Search. See our talk from FOSDEM ‘22: A lightning intro to re-Isearch.
 https://archive.fosdem.org/2022/schedule/event/lt_re_lsearch/
