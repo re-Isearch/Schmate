@@ -29,4 +29,14 @@ Since the re-Isearch  engine can at search-time respond to geo-location, user ri
 
 
 
+
 (*) Schmate (Pronounced “SHMAH-teh) is Yiddish for rag (שמאטע).
+
+
+
+<BR>
+<BR>
+
+![image](https://github.com/user-attachments/assets/4a8ad719-8338-42c9-9d67-11505a939a0e)
+
+<IMG SRC="https://nlnet.nl/image/logo_nlnet.svg" ALT="NLnet Foundation" height=100> <IMG SRC="https://nlnet.nl/logo/NGI/NGIZero-green.hex.svg" ALT="NGI0 Search" height=100> &nbsp; &nbsp; <IMG SRC="https://ngi.eu/wp-content/uploads/sites/77/2017/10/bandiera_stelle.png" ALT="EU" height=100>
