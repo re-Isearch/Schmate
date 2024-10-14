@@ -39,7 +39,7 @@ Since the re-Isearch  engine can at search-time respond to geo-location, user ri
 
 ![image](https://github.com/user-attachments/assets/4a8ad719-8338-42c9-9d67-11505a939a0e)
 
-<IMG SRC="https://nlnet.nl/image/logo_nlnet.svg" ALT="NLnet Foundation" height=100> <IMG SRC="https://nlnet.nl/logo/NGI/NGIZero-green.hex.svg" ALT="NGI0 Search" height=100> &nbsp; &nbsp; <IMG SRC="https://ngi.eu/wp-content/uploads/sites/77/2017/10/bandiera_stelle.png" ALT="EU" height=100> ![image](https://github.com/user-attachments/assets/f08b708d-35fe-4331-8eff-715fa3fbfe84)
+<IMG SRC="https://nlnet.nl/image/logo_nlnet.svg" ALT="NLnet Foundation" height=100> <IMG SRC="https://nlnet.nl/logo/NGI/NGIZero-green.hex.svg" ALT="NGI0 Search" height=100> &nbsp; &nbsp; <IMG SRC="https://ngi.eu/wp-content/uploads/sites/77/2017/10/bandiera_stelle.png" ALT="EU" height=100> <IMG SRC="https://github.com/user-attachments/assets/f08b708d-35fe-4331-8eff-715fa3fbfe84" ALT="CH" height=100>
 
 
 
