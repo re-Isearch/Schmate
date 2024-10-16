@@ -1,4 +1,4 @@
-# <IMAGE SRC="https://github.com/user-attachments/assets/54a16857-ed56-459c-94f4-abfd9f8ff8a1" HEIGHT=30> Schmate
+# <IMAGE SRC="https://github.com/user-attachments/assets/54a16857-ed56-459c-94f4-abfd9f8ff8a1" HEIGHT=35> Schmate
 
 Project שמאטע: Schmate* (Pronounced “SHMAH-teh)
 
