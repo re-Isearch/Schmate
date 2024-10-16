@@ -1,4 +1,4 @@
-# Schmate
+# ![Pasted Graphic](https://github.com/user-attachments/assets/54a16857-ed56-459c-94f4-abfd9f8ff8a1) Schmate
 
 Project שמאטע: Schmate* (Pronounced “SHMAH-teh)
 
