@@ -1,5 +1,7 @@
 # <IMAGE SRC="https://github.com/user-attachments/assets/54a16857-ed56-459c-94f4-abfd9f8ff8a1" HEIGHT=35> Schmate
 
+NOTE: Code is in the main re-Isearch distribution
+
 Project שמאטע: Schmate* (Pronounced “SHMAH-teh)
 
 Extending re-Isearch with vector datatypes for embeddings. Enabling a better dense passage retrieval (DPR) for retrieval augmented generation (RAG) and hybrid search.
