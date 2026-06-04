@@ -1,0 +1,239 @@
+class UnifiedIndex {
+private:
+    LSMVectorStorage vector_storage_;
+    size_t additions_since_flush_ = 0;
+    size_t flush_threshold_;
+    bool enable_rescoring_;
+    
+public:
+    UnifiedIndex(size_t dim, size_t flush_threshold = 10000) 
+        : vector_storage_(dim, flush_threshold),
+          flush_threshold_(flush_threshold) {}
+    
+    // Load index from combined file
+    bool loadIndex(const std::string& path) {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs.is_open()) {
+            HNSWERR << "Can't load index: '" << path << "' cannot be opened";
+            return false;
+        }
+        
+        // 1. Load metadata
+        meta_.load(ifs);
+        enable_rescoring_ = meta_.enable_rescoring_;
+        
+        // 2. Load vectors (if rescoring enabled)
+        if (enable_rescoring_) {
+            size_t num_vectors;
+            ifs.read(reinterpret_cast<char*>(&num_vectors), sizeof(size_t));
+            
+            // Option A: Pass the open stream (original approach)
+            vector_storage_.load_vectors(path, ifs, num_vectors, 
+                                        VectorStorageMode::MEMORY_MAPPED, 
+                                        flush_threshold_);
+            
+            /* Option B: If you know the offset, you could use:
+            size_t vectors_offset = ifs.tellg();
+            ifs.close();  // Close stream, we'll mmap directly
+            vector_storage_.load_vectors_at_offset(path, vectors_offset, num_vectors,
+                                                  VectorStorageMode::MEMORY_MAPPED,
+                                                  flush_threshold_);
+            ifs.open(path, std::ios::binary);  // Reopen for HNSW data
+            */
+        } else {
+            vector_storage_.load_vectors(path, ifs, 0, 
+                                        VectorStorageMode::DISABLED, 
+                                        flush_threshold_);
+        }
+        
+        // 3. Load HNSW index
+        if (float_index_) {
+            float_index_->loadIndex(ifs);
+        } else if (quant_index_) {
+            quant_index_->loadIndex(ifs);
+        }
+        
+        ifs.close();
+        return true;
+    }
+    
+    // Save index to combined file
+    void saveIndex(const std::string& path) {
+        std::ofstream ofs(path, std::ios::binary);
+        if (!ofs.is_open()) {
+            HNSWERR << "Can't save index: '" << path << "' cannot be opened for writing";
+            return;
+        }
+        
+        // 1. Save metadata
+        meta_.save(ofs);
+        
+        // 2. Save vectors (consolidated from main + deltas)
+        if (enable_rescoring_) {
+            vector_storage_.save_vectors_to_stream(ofs);
+        }
+        
+        // 3. Save HNSW index
+        if (float_index_) {
+            float_index_->saveIndex(ofs);
+        } else if (quant_index_) {
+            quant_index_->saveIndex(ofs);
+        }
+        
+        ofs.close();
+    }
+    
+    // Add a point
+    void addPoint(labeltype label, const float* data) {
+        // Add to HNSW structure
+        if (float_index_) {
+            float_index_->addPoint(data, label);
+        } else if (quant_index_) {
+            quant_index_->addPoint(data, label);
+        }
+        
+        // Add to vector storage (writes to delta)
+        if (enable_rescoring_) {
+            vector_storage_.addPoint(label, data);
+        }
+        
+        additions_since_flush_++;
+        
+        // Periodic flush
+        if (additions_since_flush_ >= flush_threshold_) {
+            flushIndex();
+        }
+    }
+    
+    // Periodic flush (called automatically or manually)
+    void flushIndex() {
+        if (additions_since_flush_ == 0) return;
+        
+        // Just flush the delta - don't compact yet
+        vector_storage_.flush_delta();
+        
+        // Could also flush HNSW structure if needed
+        // ...
+        
+        additions_since_flush_ = 0;
+    }
+    
+    // Get vector for rescoring
+    const float* getOriginalVector(labeltype label) const {
+        if (!enable_rescoring_) return nullptr;
+        return vector_storage_.get_vector(label);
+    }
+    
+    // Rescore candidates
+    void rescore_candidates(const float* query_ptr,
+                           const std::vector<std::pair<float, labeltype>>& all_candidates,
+                           std::vector<std::pair<float, labeltype>>& rescored) {
+        if (!enable_rescoring_) {
+            rescored = all_candidates;
+            return;
+        }
+        
+        rescored.clear();
+        rescored.reserve(all_candidates.size());
+        
+        for (const auto& [dist, label] : all_candidates) {
+            const float* vec_ptr = vector_storage_.get_vector(label);
+            
+            if (vec_ptr != nullptr) {
+                float true_dist;
+                if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
+                    float sim = hnswlib::cosine_similarity(query_ptr, vec_ptr, dim_);
+                    true_dist = -sim;
+                } else {
+                    true_dist = l2_distance(query_ptr, vec_ptr, dim_);
+                }
+                rescored.emplace_back(true_dist, label);
+            } else {
+                // Fallback to approximate distance if vector not found
+                rescored.emplace_back(dist, label);
+            }
+        }
+    }
+    
+    // Statistics
+    void printStats() const {
+        auto stats = vector_storage_.get_stats();
+        std::cout << "Vector Storage Stats:\n";
+        std::cout << "  Main vectors: " << stats.main_vectors << "\n";
+        std::cout << "  Delta files: " << stats.delta_files << "\n";
+        std::cout << "  Pending additions: " << stats.pending_additions << "\n";
+        std::cout << "  Total vectors: " << stats.total_vectors << "\n";
+    }
+};
+
+// Example usage with different storage modes:
+void example_usage() {
+    // Example 1: Memory-mapped storage (default, recommended)
+    UnifiedIndex index1(128, 10000);  // dim=128, flush every 10k
+    index1.loadIndex("index.bin");
+    
+    // Add many points - automatically manages deltas
+    for (int i = 0; i < 100000; i++) {
+        float data[128];
+        // ... fill data ...
+        index1.addPoint(i, data);
+    }
+    
+    // Save - automatically compacts all deltas into combined file
+    index1.saveIndex("index.bin");
+    
+    // Example 2: In-memory storage (if you want old behavior)
+    // Modify loadIndex to pass VectorStorageMode::IN_MEMORY
+    
+    // Example 3: Disabled (no rescoring)
+    // Set enable_rescoring_ = false in metadata
+}
+
+// Advanced: Manual compaction control
+class UnifiedIndexAdvanced : public UnifiedIndex {
+private:
+    size_t saves_since_compact_ = 0;
+    
+public:
+    void saveIndex(const std::string& path) override {
+        saves_since_compact_++;
+        
+        // Option 1: Compact every N saves (e.g., every 10 saves)
+        bool should_compact = (saves_since_compact_ >= 10);
+        
+        // Option 2: Compact based on delta count
+        auto stats = vector_storage_.get_stats();
+        should_compact = should_compact || (stats.delta_files >= 20);
+        
+        if (should_compact) {
+            // Full save with compaction
+            UnifiedIndex::saveIndex(path);
+            saves_since_compact_ = 0;
+        } else {
+            // Quick save - just flush current delta, don't compact
+            vector_storage_.flush_delta();
+            
+            // Save HNSW structure
+            std::ofstream ofs(path, std::ios::binary);
+            meta_.save(ofs);
+            
+            // Write consolidated vectors
+            vector_storage_.save_vectors_to_stream(ofs);
+            
+            if (float_index_) {
+                float_index_->saveIndex(ofs);
+            } else if (quant_index_) {
+                quant_index_->saveIndex(ofs);
+            }
+            ofs.close();
+        }
+    }
+};
+
+// Configuration options:
+struct VectorStorageConfig {
+    VectorStorageMode mode = VectorStorageMode::MEMORY_MAPPED;
+    size_t flush_threshold = 10000;  // Flush delta every N additions
+    size_t compact_threshold = 20;   // Compact when delta count reaches N
+    bool auto_compact_on_save = true;
+};

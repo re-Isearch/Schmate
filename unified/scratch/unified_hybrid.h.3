@@ -1,0 +1,404 @@
+// LSM-tree style vector storage with periodic compaction
+class LSMVectorStorage {
+private:
+    VectorStorageMode storage_mode_;
+    std::string base_filename_;
+    size_t dim_;
+    
+    // Main file (memory-mapped, read-only)
+    void* main_mmap_ptr_ = nullptr;
+    size_t main_mmap_size_ = 0;
+    int main_mmap_fd_ = -1;
+    size_t main_vectors_offset_ = 0;
+    std::unordered_map<labeltype, size_t> main_offsets_;
+    
+    // Delta files tracking
+    std::vector<std::string> delta_files_;
+    // NEW: Cache delta files in memory to avoid disk I/O and memory leaks
+    std::vector<std::unordered_map<labeltype, std::vector<float>>> delta_caches_;
+    
+    // Current in-memory delta (not yet flushed)
+    std::unordered_map<labeltype, std::vector<float>> current_delta_;
+    size_t additions_since_flush_ = 0;
+    size_t flush_threshold_;  // Your configurable X
+    
+public:
+    LSMVectorStorage(size_t dim, size_t flush_threshold = 10000) 
+        : dim_(dim), flush_threshold_(flush_threshold) {}
+    
+    ~LSMVectorStorage() {
+        cleanup();
+    }
+    
+    // Initial load from main file
+    bool load_vectors(const std::string& filename, std::ifstream& ifs,
+                      size_t num_vectors, VectorStorageMode mode,
+                      size_t flush_threshold) {
+        storage_mode_ = mode;
+        base_filename_ = filename;
+        flush_threshold_ = flush_threshold;
+        
+        if (mode == VectorStorageMode::DISABLED) {
+            for (size_t i = 0; i < num_vectors; i++) {
+                ifs.seekg(sizeof(labeltype) + dim_ * sizeof(float), std::ios::cur);
+            }
+            return true;
+        }
+        
+        if (mode == VectorStorageMode::IN_MEMORY) {
+            return load_in_memory(ifs, num_vectors);
+        }
+        
+        if (mode == VectorStorageMode::MEMORY_MAPPED) {
+            return load_with_mmap(ifs, num_vectors);
+        }
+        
+        return false;
+    }
+    
+private:
+    bool load_with_mmap(std::ifstream& ifs, size_t num_vectors) {
+        main_vectors_offset_ = ifs.tellg();
+        
+        // Build index
+        size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
+        main_offsets_.clear();
+        
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            main_offsets_[label] = i * entry_size;
+            ifs.seekg(dim_ * sizeof(float), std::ios::cur);
+            if (!ifs.good()) return false;
+        }
+        
+        main_mmap_size_ = num_vectors * entry_size;
+        
+        // Setup mmap
+        #ifdef _WIN32
+        return setup_mmap_windows();
+        #else
+        return setup_mmap_unix();
+        #endif
+    }
+    
+    #ifndef _WIN32
+    bool setup_mmap_unix() {
+        main_mmap_fd_ = open(base_filename_.c_str(), O_RDONLY);
+        if (main_mmap_fd_ == -1) return false;
+        
+        size_t page_size = sysconf(_SC_PAGE_SIZE);
+        size_t aligned_offset = (main_vectors_offset_ / page_size) * page_size;
+        size_t offset_adjustment = main_vectors_offset_ - aligned_offset;
+        size_t map_size = main_mmap_size_ + offset_adjustment;
+        
+        void* map_base = mmap(nullptr, map_size, PROT_READ, MAP_PRIVATE, 
+                             main_mmap_fd_, aligned_offset);
+        if (map_base == MAP_FAILED) {
+            close(main_mmap_fd_);
+            return false;
+        }
+        
+        main_mmap_ptr_ = static_cast<char*>(map_base) + offset_adjustment;
+        madvise(map_base, map_size, MADV_RANDOM);
+        
+        return true;
+    }
+    #endif
+    
+    #ifdef _WIN32
+    bool setup_mmap_windows() {
+        // Similar to previous implementation
+        // ...
+        return true;
+    }
+    #endif
+    
+    bool load_in_memory(std::ifstream& ifs, size_t num_vectors) {
+        current_delta_.clear();
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            std::vector<float> vec(dim_);
+            ifs.read(reinterpret_cast<char*>(vec.data()), dim_ * sizeof(float));
+            if (!ifs.good()) return false;
+            current_delta_[label] = std::move(vec);
+        }
+        return true;
+    }
+    
+public:
+    // Add a new vector
+    void addPoint(labeltype label, const float* data) {
+        if (storage_mode_ == VectorStorageMode::DISABLED) return;
+        
+        // Add to current delta (in-memory)
+        current_delta_[label] = std::vector<float>(data, data + dim_);
+        additions_since_flush_++;
+        
+        // Auto-flush if threshold reached
+        if (additions_since_flush_ >= flush_threshold_) {
+            flush_delta();
+        }
+    }
+    
+    // Flush current delta to a delta file
+    bool flush_delta() {
+        if (current_delta_.empty()) return true;
+        
+        // Create delta file name
+        std::string delta_file = base_filename_ + ".delta." + 
+                                std::to_string(delta_files_.size());
+        
+        std::ofstream ofs(delta_file, std::ios::binary);
+        if (!ofs) return false;
+        
+        // Write delta header
+        size_t num_vectors = current_delta_.size();
+        ofs.write(reinterpret_cast<const char*>(&num_vectors), sizeof(size_t));
+        
+        // Write vectors
+        for (const auto& [label, vec] : current_delta_) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+        
+        if (!ofs.good()) return false;
+        
+        delta_files_.push_back(delta_file);
+        
+        // OPTIMIZATION: Keep delta in memory for fast reads
+        // Trade-off: uses more RAM but avoids disk I/O and memory leaks
+        delta_caches_.push_back(std::move(current_delta_));
+        
+        current_delta_.clear();
+        additions_since_flush_ = 0;
+        
+        return true;
+    }
+    
+    // Get vector - check deltas first (most recent), then main
+    const float* get_vector(labeltype label) const {
+        // 1. Check current in-memory delta (most recent)
+        auto it = current_delta_.find(label);
+        if (it != current_delta_.end()) {
+            return it->second.data();
+        }
+        
+        // 2. Check cached delta files (reverse order - newest first)
+        // Much faster than reading from disk, no memory leaks
+        for (auto rit = delta_caches_.rbegin(); rit != delta_caches_.rend(); ++rit) {
+            auto dit = rit->find(label);
+            if (dit != rit->end()) {
+                return dit->second.data();
+            }
+        }
+        
+        // 3. Check main mmap
+        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED && main_mmap_ptr_) {
+            auto mit = main_offsets_.find(label);
+            if (mit != main_offsets_.end()) {
+                size_t offset = mit->second + sizeof(labeltype);
+                return reinterpret_cast<const float*>(
+                    static_cast<char*>(main_mmap_ptr_) + offset
+                );
+            }
+        }
+        
+        return nullptr;
+    }
+    // Compact: merge all deltas into main file
+    // Call this when you flush your HNSW index
+    bool compact() {
+        if (delta_files_.empty() && current_delta_.empty()) {
+            return true;  // Nothing to compact
+        }
+        
+        // Flush any pending delta
+        if (!current_delta_.empty()) {
+            if (!flush_delta()) return false;
+        }
+        
+        // Read all data: main + all deltas
+        std::unordered_map<labeltype, std::vector<float>> all_vectors;
+        
+        // 1. Load from main file
+        if (main_mmap_ptr_) {
+            for (const auto& [label, offset] : main_offsets_) {
+                const float* vec_ptr = reinterpret_cast<const float*>(
+                    static_cast<char*>(main_mmap_ptr_) + offset + sizeof(labeltype)
+                );
+                all_vectors[label] = std::vector<float>(vec_ptr, vec_ptr + dim_);
+            }
+        }
+        
+        // 2. Load and merge deltas (overwrites if label exists)
+        for (const auto& delta_file : delta_files_) {
+            std::ifstream ifs(delta_file, std::ios::binary);
+            if (!ifs) continue;
+            
+            size_t num_vectors;
+            ifs.read(reinterpret_cast<char*>(&num_vectors), sizeof(size_t));
+            
+            for (size_t i = 0; i < num_vectors; i++) {
+                labeltype label;
+                ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+                std::vector<float> vec(dim_);
+                ifs.read(reinterpret_cast<char*>(vec.data()), dim_ * sizeof(float));
+                all_vectors[label] = std::move(vec);
+            }
+        }
+        
+        // 3. Unmap and close old main file
+        cleanup_mmap();
+        
+        // 4. Write new consolidated file
+        std::string temp_file = base_filename_ + ".compact.tmp";
+        std::ofstream ofs(temp_file, std::ios::binary);
+        if (!ofs) return false;
+        
+        // Write vector data section
+        for (const auto& [label, vec] : all_vectors) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+        ofs.close();
+        
+        // 5. Delete old delta files
+        for (const auto& delta_file : delta_files_) {
+            std::remove(delta_file.c_str());
+        }
+        delta_files_.clear();
+        
+        // 6. Atomic rename (platform-specific handling needed for Windows)
+        #ifndef _WIN32
+        if (rename(temp_file.c_str(), base_filename_.c_str()) != 0) {
+            return false;
+        }
+        #else
+        // Windows: may need MoveFileEx with MOVEFILE_REPLACE_EXISTING
+        if (!MoveFileExA(temp_file.c_str(), base_filename_.c_str(), 
+                        MOVEFILE_REPLACE_EXISTING)) {
+            return false;
+        }
+        #endif
+        
+        // 7. Reload and remap
+        std::ifstream ifs(base_filename_, std::ios::binary);
+        return load_with_mmap(ifs, all_vectors.size());
+    }
+    
+    // Get statistics
+    struct Stats {
+        size_t main_vectors;
+        size_t delta_files;
+        size_t pending_additions;
+        size_t total_vectors;
+    };
+    
+    Stats get_stats() const {
+        Stats stats;
+        stats.main_vectors = main_offsets_.size();
+        stats.delta_files = delta_files_.size();
+        stats.pending_additions = current_delta_.size();
+        stats.total_vectors = stats.main_vectors + stats.pending_additions;
+        
+        // Could also count vectors in delta files if needed
+        return stats;
+    }
+    
+    bool is_rescoring_enabled() const {
+        return storage_mode_ != VectorStorageMode::DISABLED;
+    }
+    
+private:
+    void cleanup_mmap() {
+        #ifndef _WIN32
+        if (main_mmap_ptr_ != nullptr) {
+            // Need to unmap the adjusted base pointer
+            size_t page_size = sysconf(_SC_PAGE_SIZE);
+            size_t aligned_offset = (main_vectors_offset_ / page_size) * page_size;
+            size_t offset_adjustment = main_vectors_offset_ - aligned_offset;
+            void* map_base = static_cast<char*>(main_mmap_ptr_) - offset_adjustment;
+            munmap(map_base, main_mmap_size_ + offset_adjustment);
+            main_mmap_ptr_ = nullptr;
+        }
+        if (main_mmap_fd_ != -1) {
+            close(main_mmap_fd_);
+            main_mmap_fd_ = -1;
+        }
+        #else
+        if (main_mmap_ptr_ != nullptr) {
+            UnmapViewOfFile(main_mmap_ptr_);
+            main_mmap_ptr_ = nullptr;
+        }
+        #endif
+    }
+    
+    void cleanup() {
+        // Flush any pending additions
+        flush_delta();
+        cleanup_mmap();
+        
+        // Clear delta caches to free memory
+        delta_caches_.clear();
+    }
+};
+
+// Usage with HNSW index flushing:
+class HNSWIndex {
+private:
+    LSMVectorStorage vector_storage_;
+    size_t additions_since_index_flush_ = 0;
+    size_t index_flush_threshold_;
+    
+public:
+    HNSWIndex(size_t dim, size_t flush_threshold) 
+        : vector_storage_(dim, flush_threshold),
+          index_flush_threshold_(flush_threshold) {}
+    
+    void addPoint(labeltype label, const float* data) {
+        // Add to HNSW structure
+        // ... your existing HNSW logic ...
+        
+        // Add to vector storage
+        vector_storage_.addPoint(label, data);
+        additions_since_index_flush_++;
+        
+        // Periodic flush of HNSW index
+        if (additions_since_index_flush_ >= index_flush_threshold_) {
+            flush_index();
+        }
+    }
+    
+    void flush_index() {
+        // 1. Flush vector storage deltas
+        vector_storage_.flush_delta();
+        
+        // 2. Flush HNSW index structure
+        // ... your existing HNSW serialization ...
+        
+        additions_since_index_flush_ = 0;
+    }
+    
+    void compact_and_save() {
+        // Full compaction - called on final save or periodically
+        vector_storage_.compact();
+        // ... save HNSW structure ...
+    }
+};
+
+// Example usage:
+void example() {
+    HNSWIndex index(128, 10000);  // dim=128, flush every 10k additions
+    
+    // Add vectors - automatically flushes every 10k
+    for (int i = 0; i < 100000; i++) {
+        float data[128];
+        // ... fill data ...
+        index.addPoint(i, data);
+    }
+    
+    // Final save with compaction
+    index.compact_and_save();
+}

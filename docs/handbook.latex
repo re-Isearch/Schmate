@@ -1,0 +1,580 @@
+\section{🧠 SBERT-HNSW Embedding Search
+Handbook}\label{sbert-hnsw-embedding-search-handbook}
+
+\subsection{Overview}\label{overview}
+
+This handbook documents the SBERT-HNSW embedding search system --- a
+C++17 project that combines a GGML-based Sentence-BERT encoder, HNSWlib
+for approximate nearest-neighbor search, and efficient mmap-backed
+offset storage for text retrieval. The system supports sharded HNSW
+indices, multiple search modes (kNN, radius, relative, adaptive),
+deletion/undelete, merges, and incremental on-disk flushing.
+
+This system provides a sentence-embedding search engine built on: -
+SBERT (Sentence-BERT) model running via ggml (no Python dependency) -
+HNSWlib for fast approximate nearest neighbor (ANN) retrieval -
+Memory-mapped offset files for persistent, efficient text--embedding
+linkage - Automatic sharding, flushing, and adaptive thresholding
+
+All code is implemented in modern C++17, optimized for macOS and Linux.
+
+The repository provides the following main components: -
+\texttt{SBertGGML} --- model tokenizer + encoder wrapper (ggml). -
+\texttt{OffsetFile} --- memory-mapped persistent structure mapping HNSW
+labels to sentence metadata and byte offsets. - \texttt{BertIndex} ---
+single-shard index combining HNSW, OffsetFile, and sentences file;
+supports append/search/delete/flush. - \texttt{ShardedIndex} ---
+collection of \texttt{BertIndex} shards with automated discovery,
+sharding logic, and parallel search. - \texttt{BertIndexManager} ---
+top-level manager for named indexes and the interactive REPL.
+
+This document explains each class, important functions, configuration
+options, file formats, and developer notes. It also contains UML
+diagrams illustrating class relationships and data flow.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Table of Contents}\label{table-of-contents}
+
+\begin{itemize}
+\tightlist
+\item
+  \hyperref[overview]{Overview}
+\item
+  \hyperref[classes-and-apis]{Classes and APIs}
+
+  \begin{itemize}
+  \tightlist
+  \item
+    \hyperref[sbertggml]{SBertGGML}
+  \item
+    \hyperref[offsetfile]{OffsetFile}
+  \item
+    \hyperref[bertindex]{BertIndex}
+  \item
+    \hyperref[shardedindex]{ShardedIndex}
+  \item
+    \hyperref[bertindexmanager]{BertIndexManager}
+  \end{itemize}
+\item
+  \hyperref[search-modes--heuristics]{Search Modes \& Heuristics}
+\item
+  \hyperref[file-formats]{File Formats}
+\item
+  \hyperref[concurrency--performance]{Concurrency \& Performance}
+\item
+  \hyperref[operational-notes]{Operational Notes}
+\item
+  \hyperref[uml-diagrams]{UML Diagrams}
+\item
+  \hyperref[quick-start-examples]{Quick Start Examples}
+\item
+  \hyperref[developer-checklist--tests]{Developer Checklist \& Tests}
+\end{itemize}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Classes and APIs}\label{classes-and-apis}
+
+\subsubsection{\texorpdfstring{\texttt{SBertGGML}}{SBertGGML}}\label{sbertggml}
+
+\textbf{Purpose:} Wraps the GGML-based SBERT model: tokenization,
+evaluation, and optional normalization for cosine search.
+
+\textbf{Key members (example):}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{struct}\NormalTok{ SBertGGML }\OperatorTok{\{}
+\NormalTok{    bert\_ctx }\OperatorTok{*}\NormalTok{ctx }\OperatorTok{=} \KeywordTok{nullptr}\OperatorTok{;}       \CommentTok{// internal ggml model context}
+    \DataTypeTok{size\_t}\NormalTok{ n\_embd }\OperatorTok{=} \DecValTok{0}\OperatorTok{;}             \CommentTok{// embedding dimension}
+    \DataTypeTok{bool}\NormalTok{ normalize\_for\_cosine }\OperatorTok{=} \KeywordTok{true}\OperatorTok{;}
+
+    \KeywordTok{explicit}\NormalTok{ SBertGGML}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{model\_path}\OperatorTok{);}
+    \OperatorTok{\textasciitilde{}}\NormalTok{SBertGGML}\OperatorTok{();}
+
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\DataTypeTok{float}\OperatorTok{\textgreater{}}\NormalTok{ encode\_text}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{text}\OperatorTok{,} \DataTypeTok{bool}\NormalTok{ debug}\OperatorTok{=}\KeywordTok{false}\OperatorTok{);}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Usage notes:} - Initialize once per thread or keep a shared
+instance with thread-safe encoder usage (or guard concurrency). - When
+\texttt{cfg.metric\ ==\ "cosine"}, \texttt{encode\_text()} should
+normalize embeddings (L2 norm = 1) before returning them. Do
+\textbf{not} normalize if the runtime metric is L2. - Provide a small
+debug mode that prints token counts, first N embedding components, and
+norm.
+
+\textbf{Example:}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{SBertGGML encoder}\OperatorTok{(}\StringTok{"/path/to/sbert.ggml"}\OperatorTok{);}
+\KeywordTok{auto}\NormalTok{ emb }\OperatorTok{=}\NormalTok{ encoder}\OperatorTok{.}\NormalTok{encode\_text}\OperatorTok{(}\StringTok{"He develops in C++"}\OperatorTok{,} \KeywordTok{true}\OperatorTok{);}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsubsection{\texorpdfstring{\texttt{OffsetFile}}{OffsetFile}}\label{offsetfile}
+
+\textbf{Purpose:} Persistent, memory-mapped table of
+\texttt{OffsetEntry} structures that map HNSW labels to sentence
+metadata (SID, token spans, file byte offsets).
+
+\textbf{Data layout}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{struct}\NormalTok{ OffsetEntry }\OperatorTok{\{}
+    \DataTypeTok{int64\_t}\NormalTok{ sentence\_id}\OperatorTok{;}       \CommentTok{// externally provided persistent ID}
+    \DataTypeTok{int32\_t}\NormalTok{ token\_start}\OperatorTok{;}
+    \DataTypeTok{int32\_t}\NormalTok{ token\_end}\OperatorTok{;}
+    \DataTypeTok{int64\_t}\NormalTok{ file\_start}\OperatorTok{;}        \CommentTok{// byte offset in sentences file (inclusive)}
+    \DataTypeTok{int64\_t}\NormalTok{ file\_end}\OperatorTok{;}          \CommentTok{// byte offset in sentences file (exclusive)}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Key methods (example):}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{class}\NormalTok{ OffsetFile }\OperatorTok{\{}
+\KeywordTok{public}\OperatorTok{:}
+\NormalTok{    OffsetFile}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{path}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ max\_entries}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ header\_size }\OperatorTok{=} \DecValTok{0}\OperatorTok{);}
+    \OperatorTok{\textasciitilde{}}\NormalTok{OffsetFile}\OperatorTok{();}
+
+\NormalTok{    OffsetEntry get}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{)} \AttributeTok{const}\OperatorTok{;}
+\NormalTok{    OffsetEntry }\OperatorTok{*}\NormalTok{get\_mut}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ set}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{,} \AttributeTok{const}\NormalTok{ OffsetEntry }\OperatorTok{\&}\NormalTok{entry}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ for\_each}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{function}\OperatorTok{\textless{}}\DataTypeTok{void}\OperatorTok{(}\DataTypeTok{size\_t}\OperatorTok{,}\AttributeTok{const}\NormalTok{ OffsetEntry}\OperatorTok{\&)\textgreater{}} \OperatorTok{\&}\NormalTok{fn}\OperatorTok{)} \AttributeTok{const}\OperatorTok{;}
+
+    \CommentTok{// flush single entry or whole file}
+    \DataTypeTok{void}\NormalTok{ flush}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label }\OperatorTok{=}\NormalTok{ SIZE\_MAX}\OperatorTok{);}
+    \DataTypeTok{size\_t}\NormalTok{ entry\_address}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{)} \AttributeTok{const}\OperatorTok{;}
+    \DataTypeTok{size\_t}\NormalTok{ count}\OperatorTok{()} \AttributeTok{const}\OperatorTok{;}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Behavior \& notes:} - The file is usually created with a small
+header area (for manifest/meta) followed by an array of
+\texttt{OffsetEntry} entries. - \texttt{get\_mut()} returns a pointer
+directly into the mmap region for in-place updates; remember to
+\texttt{flush(label)} after modifying. - The API provides a small
+\texttt{for\_each()} helper for scanning all entries efficiently without
+materializing the whole table in memory.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsubsection{\texorpdfstring{\texttt{BertIndex}}{BertIndex}}\label{bertindex}
+
+\textbf{Purpose:} Single-shard index object combining SBERT encoder,
+HNSW graph, the \texttt{OffsetFile}, and the \texttt{sentences} text
+file. Responsible for adding entries, searching, removing, undeleting,
+flushing and saving to disk.
+
+\textbf{Key members (example):}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{class}\NormalTok{ BertIndex }\OperatorTok{\{}
+\KeywordTok{public}\OperatorTok{:}
+\NormalTok{    BertIndex}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{base\_name}\OperatorTok{,} \AttributeTok{const}\NormalTok{ HnswConfig }\OperatorTok{\&}\NormalTok{cfg}\OperatorTok{);}
+    \OperatorTok{\textasciitilde{}}\NormalTok{BertIndex}\OperatorTok{();}
+
+    \DataTypeTok{size\_t}\NormalTok{ append}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{sentence}\OperatorTok{,} \DataTypeTok{int64\_t}\NormalTok{ sentence\_id}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ appendid}\OperatorTok{(}\DataTypeTok{int64\_t}\NormalTok{ sentence\_id}\OperatorTok{,} \AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{sentence}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ remove}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ undelete}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{);}
+
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ knn}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{query}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ k}\OperatorTok{);}
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ radius}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{query}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ radius}\OperatorTok{);}
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ relative}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{query}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ alpha}\OperatorTok{);}
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ adaptive}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{query}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ alpha}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ minN}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ lookahead}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ gapDelta}\OperatorTok{);}
+
+    \DataTypeTok{void}\NormalTok{ flush}\OperatorTok{();}      \CommentTok{// flush offsets and optionally save HNSW}
+    \DataTypeTok{void}\NormalTok{ save}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{path}\OperatorTok{);} \CommentTok{// persist HNSW + optional metadata}
+    \DataTypeTok{void}\NormalTok{ load}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{path}\OperatorTok{);} \CommentTok{// load HNSW + metadata}
+    \DataTypeTok{size\_t}\NormalTok{ size}\OperatorTok{()} \AttributeTok{const}\OperatorTok{;}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{SearchResult struct:}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{struct}\NormalTok{ SearchResult }\OperatorTok{\{}
+    \DataTypeTok{float}\NormalTok{ score}\OperatorTok{;}
+    \DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{;}
+    \DataTypeTok{int64\_t}\NormalTok{ sentence\_id}\OperatorTok{;}
+    \DataTypeTok{size\_t}\NormalTok{ token\_start}\OperatorTok{,}\NormalTok{ token\_end}\OperatorTok{;}
+    \DataTypeTok{int64\_t}\NormalTok{ file\_start}\OperatorTok{,}\NormalTok{ file\_end}\OperatorTok{;}
+    \DataTypeTok{size\_t}\NormalTok{ address}\OperatorTok{;}       \CommentTok{// byte offset in .offsets file (optional)}
+    \BuiltInTok{std::}\NormalTok{string text}\OperatorTok{;}     \CommentTok{// populated lazily or by caller}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Important details:} - \texttt{append()} will: - chunk long
+sentences into overlapping spans if configured to do so, - write
+chunk(s) into \texttt{sentences.txt} and update an \texttt{OffsetEntry}
+for each chunk, - add chunk embedding into the HNSW graph with the
+returned label, - increment \texttt{dirty\_count} and flush HNSW when
+\texttt{dirty\_count\ \textgreater{}=\ cfg.flush\_every}. -
+\texttt{remove()} should use HNSW's delete/markDeleted semantics;
+offsets keep an entry with \texttt{file\_start==file\_end==0} to
+indicate deleted records. - \texttt{flush()} should msync only changed
+portions of the offsets mmap and optionally call
+\texttt{hnsw\_index-\textgreater{}saveIndex()} in batches to avoid
+constant re-saving after every append.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Chunking Strategy}\label{chunking-strategy}
+
+The main chunking strategies used in the field are: - Size-based
+chunking: A simple method of splitting a document into chunks of a fixed
+number of words or characters. - Paragraph-based chunking: Splitting a
+document into chunks based on its paragraphs. This is useful for highly
+structured documents. - Semantic chunking: A more advanced method that
+uses the meaning of the text to decide where to split chunks, aiming to
+keep related ideas together. - Sliding window chunking: A technique that
+creates overlapping chunks to ensure that context is not lost at the
+boundaries between chunks.
+
+We use a synergy of these methods. For the semantic side we view the
+structural nature of a document (both explicit and implicit) as designed
+by the author to communicate meaning and as such as a good indication of
+semantic context. Paragraph chunking is a specific casebut we consider
+any fields/paths (explicit and implicit) designated for dense indexing.
+These ``fields'' are then fed into the system and when above a certain
+length are exposed to a sliding window chunking whose overlap can be
+pre-configured.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsubsection{\texorpdfstring{\texttt{ShardedIndex}}{ShardedIndex}}\label{shardedindex}
+
+\textbf{Purpose:} Manages a collection of \texttt{BertIndex} shards for
+scaling past a single HNSW capacity limit. Supports adding shards,
+choosing a shard for new appends, merging shards, parallel searches and
+shard-level operations.
+
+\textbf{Key methods (example):}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{class}\NormalTok{ ShardedIndex }\OperatorTok{\{}
+\KeywordTok{public}\OperatorTok{:}
+\NormalTok{    ShardedIndex}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{base\_name}\OperatorTok{,} \AttributeTok{const}\NormalTok{ HnswConfig }\OperatorTok{\&}\NormalTok{cfg}\OperatorTok{);}
+
+    \DataTypeTok{void}\NormalTok{ add\_shard}\OperatorTok{();}
+    \DataTypeTok{size\_t}\NormalTok{ shard\_count}\OperatorTok{()} \AttributeTok{const}\OperatorTok{;}
+    \DataTypeTok{void}\NormalTok{ append}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{sentence}\OperatorTok{,} \DataTypeTok{int64\_t}\NormalTok{ sentence\_id}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ remove}\OperatorTok{(}\DataTypeTok{size\_t}\NormalTok{ label}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ shard }\OperatorTok{=} \DecValTok{0}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ delete\_byAddress}\OperatorTok{(}\DataTypeTok{int64\_t}\NormalTok{ addr}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ shard }\OperatorTok{=} \DecValTok{0}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ merge\_last\_two}\OperatorTok{();}        \CommentTok{// compaction: merge last two shards to reduce fragmentation}
+    \DataTypeTok{void}\NormalTok{ flush}\OperatorTok{();}
+
+    \CommentTok{// search across shards (parallel)}
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ knn}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{q}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ k}\OperatorTok{);}
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ radius}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{q}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ radius}\OperatorTok{);}
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ adaptive}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{q}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ alpha}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ minN}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ lookahead}\OperatorTok{,} \DataTypeTok{float}\NormalTok{ gapDelta}\OperatorTok{);}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Notes:} - On initialization, \texttt{ShardedIndex} discovers
+shard files by scanning for
+\texttt{\textless{}base\textgreater{}\_shard\textless{}i\textgreater{}.*}
+starting at 0 until a missing index is found. It loads all shards into
+memory (can be parallelized). - \texttt{append()} selects the last shard
+unless it is full, in which case \texttt{add\_shard()} is called. -
+\texttt{merge\_last\_two()} (optionally parallel) creates a merged
+shard, then atomically replaces the two old files and updates the shard
+table.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsubsection{\texorpdfstring{\texttt{BertIndexManager}}{BertIndexManager}}\label{bertindexmanager}
+
+\textbf{Purpose:} A simple namespace manager mapping names to
+\texttt{ShardedIndex} instances. Provides REPL handling helpers and
+convenience operations for multiple named datasets.
+
+\textbf{Selected API:}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{class}\NormalTok{ BertIndexManager }\OperatorTok{\{}
+\KeywordTok{public}\OperatorTok{:}
+\NormalTok{    BertIndexManager}\OperatorTok{(}\AttributeTok{const}\NormalTok{ HnswConfig }\OperatorTok{\&}\NormalTok{cfg}\OperatorTok{);}
+
+\NormalTok{    ShardedIndex }\OperatorTok{\&}\NormalTok{getOrCreate}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ load\_or\_create}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ use}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{);}
+
+    \BuiltInTok{std::}\NormalTok{vector}\OperatorTok{\textless{}}\NormalTok{SearchResult}\OperatorTok{\textgreater{}}\NormalTok{ knn}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{,} \AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{q}\OperatorTok{,} \DataTypeTok{size\_t}\NormalTok{ k}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ append}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{,} \AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{sentence}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ appendid}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{,} \DataTypeTok{int64\_t}\NormalTok{ sid}\OperatorTok{,} \AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{sentence}\OperatorTok{);}
+    \DataTypeTok{void}\NormalTok{ flush}\OperatorTok{(}\AttributeTok{const} \BuiltInTok{std::}\NormalTok{string }\OperatorTok{\&}\NormalTok{name}\OperatorTok{);}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsubsection{⚙️ Configuration
+(HnswConfig)}\label{configuration-hnswconfig}
+
+See struct HnswConfig
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Search Modes \& Heuristics}\label{search-modes-heuristics}
+
+\textbf{kNN} --- Standard top-k retrieval using HNSW's
+\texttt{searchKnnCloserFirst}. Return order depends on metric: - L2:
+lower distance is better (ascending sort) - Cosine / Inner-product:
+higher value is better (descending sort after converting distances if
+needed)
+
+\textbf{Radius} --- Return all candidates with score \textgreater=
+threshold (for cosine) or \textless= threshold (for L2). Implement by
+retrieving a large candidate list (\texttt{cfg.max\_elements} or an
+upper-bounded \texttt{k}) then filtering.
+
+\textbf{Relative} --- Keep results within
+\texttt{alpha\ *\ best\_score}.
+
+\textbf{Adaptive} --- Retrieve a lookahead number of results, apply
+\texttt{minN}, then apply a \texttt{gapDelta} heuristic: stop when
+consecutive score gap exceeds \texttt{gapDelta} after at least
+\texttt{minN} results are kept.
+
+\textbf{Ranking heuristic suggestions:} combine: - absolute threshold
+(minScore) - relative threshold (alpha × top) - gap detection (lookahead
++ gapDelta) - cluster-aware cutoff (use top-N and cluster-distance
+heuristics)
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{💾 FIle Formats /
+Persistence}\label{file-formats-persistence}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.1515}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.2273}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.6212}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Component
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Storage File
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Notes
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Sentences & \texttt{sentences.txt} & UTF-8 text, newline-delimited \\
+Offsets & \texttt{offsets.bin} & Binary, mmap-backed \\
+HNSW index & \texttt{index.hix} & Saved periodically or at
+flush/destructor \\
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{sentences.txt} --- newline-delimited UTF-8 sentences or
+  chunks. Each appended chunk's start/end byte offsets are stored in
+  \texttt{OffsetEntry}.
+\item
+  \texttt{offsets.bin} --- mmap-backed binary file with optional header
+  and an array of \texttt{OffsetEntry}. Header may store meta fields:
+  format version, dim, metric, normalized flag, element\_count.
+\item
+  \texttt{index.hix} --- HNSW binary graph saved by
+  \texttt{hnsw\_index-\textgreater{}saveIndex()}. Can optionally be
+  prefixed by a small header or stored separately as
+  \texttt{\textless{}base\textgreater{}.hnsw}.
+\end{itemize}
+
+\textbf{Metadata header (optional)}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{struct}\NormalTok{ IndexMeta }\OperatorTok{\{}
+    \DataTypeTok{uint32\_t}\NormalTok{ version}\OperatorTok{;}
+    \DataTypeTok{char}\NormalTok{ metric}\OperatorTok{[}\DecValTok{16}\OperatorTok{];}        \CommentTok{// "L2", "cosine", "ip"}
+    \DataTypeTok{bool}\NormalTok{ normalized}\OperatorTok{;}        \CommentTok{// were embeddings normalized on insert?}
+    \DataTypeTok{uint32\_t}\NormalTok{ dim}\OperatorTok{;}
+    \DataTypeTok{uint64\_t}\NormalTok{ element\_count}\OperatorTok{;}
+\OperatorTok{\};}
+\end{Highlighting}
+\end{Shaded}
+
+If you prefix the HNSW file with \texttt{IndexMeta}, ensure the HNSW
+loader is able to seek after the header (or use stream-based load API).
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Concurrency \& Performance}\label{concurrency-performance}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Parallel search:} query shards in parallel, then merge top-k
+  results. Use a thread pool or \texttt{std::async} and aggregate.
+\item
+  \textbf{Parallel merge:} when merging two shards, collect
+  \texttt{(text,\ sid)} pairs concurrently, then append to the merged
+  index using multiple threads. Guard SBERT inference concurrency to
+  limit per-thread GGML memory pressure.
+\item
+  \textbf{Flush strategy:} keep offsets in mmap and msync single-entry
+  updates; batch HNSW saves using \texttt{dirty\_count} and
+  \texttt{cfg.flush\_every} threshold to balance durability and
+  throughput.
+\item
+  \textbf{Memory safety on macOS:} call
+  \texttt{relax\_macos\_malloc\_zones()} (or set
+  \texttt{MallocNanoZone=0}) before loading large ggml or HNSW buffers
+  to avoid the ``nano zone abandoned'' message and fragmentation issues.
+\item
+  Memory-mapped I/O for minimal disk overhead.
+\item
+  Optional compile-time thread cache.
+\end{itemize}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{🧩 Future Extensions}\label{future-extensions}
+
+\begin{itemize}
+\tightlist
+\item
+  Mmap-based SID lookup cache
+\item
+  Distributed multi-host shard management
+\item
+  GPU-accelerated encoding (Metal / CUDA)
+\item
+  Optional LRU-based embedding cache
+\end{itemize}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Operational Notes}\label{operational-notes}
+
+\begin{itemize}
+\tightlist
+\item
+  If you change the embedding dimension or metric, existing HNSW files
+  must be rebuilt or carefully validated. Use metadata to detect
+  mismatches at load time.
+\item
+  Ensure \texttt{auto\_sentence\_id} resumes from the highest SID on
+  disk at load time to preserve global SID uniqueness.
+\item
+  When upgrading offset file format, implement a loader that detects old
+  layout and upgrades to the new format (or reject old files
+  explicitly).
+\item
+  Prefer export of indexes and offsets as separate artifacts to allow
+  migration, offline repair, and cross-system portability.
+\end{itemize}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{UML Diagrams}\label{uml-diagrams}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Class Diagram} --- shows relationships between
+  \texttt{BertIndex}, \texttt{OffsetFile}, \texttt{SBertGGML},
+  \texttt{hnswlib::HierarchicalNSW}, and \texttt{ShardedIndex}.
+\item
+  \textbf{Data Flow Diagram} --- shows appending flow (sentence → chunk
+  → sentences.txt + offsets + HNSW) and search flow (query → encode →
+  HNSW search → offsets lookup → text reconstruction).
+\end{itemize}
+
+Images included in this package: - \texttt{images/class\_diagram.svg} -
+\texttt{images/data\_flow.svg}
+
+(See diagrams below.)
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Quick Start Examples}\label{quick-start-examples}
+
+\textbf{Create index and append:}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{HnswConfig cfg}\OperatorTok{;}
+\NormalTok{cfg}\OperatorTok{.}\NormalTok{metric }\OperatorTok{=} \StringTok{"cosine"}\OperatorTok{;}
+\NormalTok{cfg}\OperatorTok{.}\NormalTok{max\_elements }\OperatorTok{=} \DecValTok{100000}\OperatorTok{;}
+\NormalTok{BertIndexManager manager}\OperatorTok{(}\NormalTok{cfg}\OperatorTok{);}
+\NormalTok{manager}\OperatorTok{.}\NormalTok{load\_or\_create}\OperatorTok{(}\StringTok{"default"}\OperatorTok{);}
+\NormalTok{manager}\OperatorTok{.}\NormalTok{append}\OperatorTok{(}\StringTok{"He develops in C++"}\OperatorTok{);}
+\NormalTok{manager}\OperatorTok{.}\NormalTok{appendid}\OperatorTok{(}\DecValTok{1001}\OperatorTok{,} \StringTok{"She likes Prolog"}\OperatorTok{);}
+\NormalTok{manager}\OperatorTok{.}\NormalTok{flush}\OperatorTok{(}\StringTok{"default"}\OperatorTok{);}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Search (kNN):}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{auto}\NormalTok{ res }\OperatorTok{=}\NormalTok{ manager}\OperatorTok{.}\NormalTok{knn}\OperatorTok{(}\StringTok{"default"}\OperatorTok{,} \StringTok{"what language does he use?"}\OperatorTok{,} \DecValTok{5}\OperatorTok{);}
+\ControlFlowTok{for} \OperatorTok{(}\KeywordTok{auto} \OperatorTok{\&}\NormalTok{r }\OperatorTok{:}\NormalTok{ res}\OperatorTok{)} \OperatorTok{\{}
+    \BuiltInTok{std::}\NormalTok{cout }\OperatorTok{\textless{}\textless{}}\NormalTok{ r}\OperatorTok{.}\NormalTok{score }\OperatorTok{\textless{}\textless{}} \StringTok{" "} \OperatorTok{\textless{}\textless{}}\NormalTok{ r}\OperatorTok{.}\NormalTok{text }\OperatorTok{\textless{}\textless{}} \BuiltInTok{std::}\NormalTok{endl}\OperatorTok{;}
+\OperatorTok{\}}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Merge last two shards:}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{auto} \OperatorTok{\&}\NormalTok{sh }\OperatorTok{=}\NormalTok{ manager}\OperatorTok{.}\NormalTok{getOrCreate}\OperatorTok{(}\StringTok{"default"}\OperatorTok{);}
+\NormalTok{sh}\OperatorTok{.}\NormalTok{merge\_last\_two}\OperatorTok{();}
+\NormalTok{sh}\OperatorTok{.}\NormalTok{flush}\OperatorTok{();}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Developer Checklist \&
+Tests}\label{developer-checklist-tests}
+
+\textbf{Startup checks:} - {[} {]} \texttt{offsets.bin} header matches
+expected format. - {[} {]} highest SID is computed and
+\texttt{auto\_sentence\_id} resumed. - {[} {]} HNSW metric/dim
+validation against metadata.
+
+\textbf{Integration tests:} - Small test corpus (4-8 sentences) and
+expected ranking results for several queries. - Test append+restart:
+append, exit, restart, append more; ensure SID incrementing persists and
+no collisions. - Test delete+undelete and reclaim label space. - Test
+merge\_last\_two preserves SIDs and deletes old files safely.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Contact \& Contribution}\label{contact-contribution}
+
+If you extend the project (new heuristics, alternate embedding models,
+or distributed sharding), please update this handbook with API changes.
+Contributions welcome via PRs to the repository.
+
+edz@nonmonotonic.net
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}

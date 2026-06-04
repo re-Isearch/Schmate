@@ -1,0 +1,55 @@
+#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <optional>
+#include <fstream>
+
+// Fast key-value store for up to 50 model path mappings
+class ModelPathStore {
+public:
+    static constexpr size_t MAX_ENTRIES = 50;
+    
+private:
+    std::unordered_map<std::string, std::string> store;
+    
+public:
+    ModelPathStore() = default;
+    
+    // Set a key-value pair
+    bool set(const std::string& key, const std::string& value);
+    
+    // Get value by key
+    std::optional<std::string> get(const std::string& key) const;
+    
+    // Remove a key
+    bool remove(const std::string& key);
+    
+    // Get count of entries
+    inline size_t size() const { return store.size(); }
+    
+    // Clear all entries
+    inline void clear() { store.clear(); }
+    
+    // Check if key exists
+    bool contains(const std::string& key) const { return store.find(key) != store.end(); }
+    
+    // Get all keys
+    std::vector<std::string> keys() const;
+    
+    // Save to binary file
+    bool save(const std::string& filename) const;
+    
+    // Load from binary file
+    bool load(const std::string& filename);
+    
+    // Export to text file
+    bool exportToText(const std::string& filename) const;
+    
+    // Import from text file (key=value format, one per line)
+    bool importFromText(const std::string& filename);
+    
+    // Iterator access
+    auto begin() const { return store.begin(); }
+    auto end() const { return store.end(); }
+};

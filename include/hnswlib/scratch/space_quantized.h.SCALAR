@@ -1,0 +1,209 @@
+#pragma once
+#include <vector>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <algorithm>
+#include <numeric>
+#include <thread>
+#include <atomic>
+#include <cassert>
+#include <iostream>
+
+#include "hnswlib.h"  // adjust path if needed
+#include "pearson_corr.h"
+
+#if defined(__AVX512F__)
+#  include <immintrin.h>
+#elif defined(__AVX2__)
+#  include <immintrin.h>
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+#  include <arm_neon.h>
+#endif
+
+namespace hnswlib {
+
+enum class QuantMode { BIN1=0, INT4=1, INT8=2 };
+enum class BinMode  { STANDARD=0, BETTER=1 };
+
+/*
+// Pearson correlation helper (used in Better BIN1)
+inline float pearson_corr(const std::vector<float>& a, const std::vector<float>& b) {
+    float mean_a = std::accumulate(a.begin(), a.end(), 0.f) / a.size();
+    float mean_b = std::accumulate(b.begin(), b.end(), 0.f) / b.size();
+    double num = 0.0, da2 = 0.0, db2 = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        double da = double(a[i]) - mean_a;
+        double db = double(b[i]) - mean_b;
+        num += da * db;
+        da2 += da * da;
+        db2 += db * db;
+    }
+    return float(num / std::sqrt(da2 * db2 + 1e-12));
+}
+*/
+
+template<typename T=float>
+class SpaceQuantized : public SpaceInterface<uint8_t> {
+public:
+    using DISTFUNC_TYPE = DISTFUNC<uint8_t>;
+
+    size_t dim;
+    QuantMode qmode;
+    BinMode bin_mode;
+    size_t bytes_per_vector;
+
+    std::vector<T> thresholds;
+    std::vector<T> scale;
+    std::vector<T> minval;
+    std::vector<T> scale_sq;
+
+    explicit SpaceQuantized(size_t dim_,
+                            QuantMode qmode_,
+                            BinMode bin_mode_ = BinMode::STANDARD,
+                            const std::vector<std::vector<T>>* sample_embeddings = nullptr)
+        : dim(dim_), qmode(qmode_), bin_mode(bin_mode_) {
+        assert(dim > 0);
+        if (qmode == QuantMode::BIN1) {
+            bytes_per_vector = (dim + 7) / 8;
+            thresholds.assign(dim, T(0));
+            if (sample_embeddings) {
+                const size_t n = sample_embeddings->size();
+                std::vector<T> col(n);
+                for (size_t d = 0; d < dim; ++d) {
+                    for (size_t i = 0; i < n; ++i) col[i] = (*sample_embeddings)[i][d];
+                    if (bin_mode == BinMode::STANDARD) {
+                        std::nth_element(col.begin(), col.begin() + n/2, col.end());
+                        thresholds[d] = col[n/2];
+                    } else { // BETTER BIN
+                        std::sort(col.begin(), col.end());
+                        T best_thr = col[n/2];
+                        float best_corr = -1;
+                        for (int k = 1; k < 99; ++k) {
+                            size_t id = k * n / 100;
+                            T thr = col[id];
+                            std::vector<float> bits(n);
+                            for (size_t i = 0; i < n; ++i) bits[i] = (col[i] > thr) ? 1.f : 0.f;
+                            float corr = std::fabs(pearson_corr(bits, col));
+                            if (corr > best_corr) { best_corr = corr; best_thr = thr; }
+                        }
+                        thresholds[d] = best_thr;
+                    }
+                }
+            }
+        } else if (qmode == QuantMode::INT8) {
+            bytes_per_vector = dim;
+            scale.assign(dim, 1);
+            minval.assign(dim, 0);
+            scale_sq.assign(dim, 1);
+            if (sample_embeddings) compute_scale_min(*sample_embeddings, 255.0);
+        } else if (qmode == QuantMode::INT4) {
+            bytes_per_vector = (dim + 1) / 2;
+            scale.assign(dim, 1);
+            minval.assign(dim, 0);
+            scale_sq.assign(dim, 1);
+            if (sample_embeddings) compute_scale_min(*sample_embeddings, 15.0);
+        }
+    }
+
+    // --- SpaceInterface overrides ---
+    size_t get_data_size() override { return bytes_per_vector; }
+
+    DISTFUNC_TYPE get_dist_func() override { return &SpaceQuantized::fstdist_; }
+
+    void* get_dist_func_param() override { return this; }
+
+    // ---- Quantization ----
+    void quantize(const T* emb, uint8_t* out) const {
+        if (qmode == QuantMode::BIN1) quantize_bin(emb, out);
+        else if (qmode == QuantMode::INT8) quantize_int8(emb, out);
+        else quantize_int4(emb, out);
+    }
+
+private:
+    static float fstdist_(const void* p1, const void* p2, const void* param) {
+        const SpaceQuantized* sp = reinterpret_cast<const SpaceQuantized*>(param);
+        return sp->compute_dist(reinterpret_cast<const uint8_t*>(p1),
+                                reinterpret_cast<const uint8_t*>(p2));
+    }
+
+    // Compute distance between two quantized vectors
+    float compute_dist(const uint8_t* a, const uint8_t* b) const {
+        if (qmode == QuantMode::BIN1) {
+            uint32_t acc = 0;
+            for (size_t i = 0; i < bytes_per_vector; ++i)
+                acc += __builtin_popcount(a[i] ^ b[i]);
+            return float(acc);
+        } else if (qmode == QuantMode::INT8) {
+            double acc = 0;
+            for (size_t d = 0; d < dim; ++d) {
+                int diff = int(a[d]) - int(b[d]);
+                acc += double(diff * diff) * double(scale_sq[d]);
+            }
+            return float(acc);
+        } else { // INT4
+            double acc = 0;
+            for (size_t d = 0; d < dim; d += 2) {
+                uint8_t ba = a[d>>1], bb = b[d>>1];
+                uint8_t a0 = ba & 0x0F, a1 = (ba >> 4);
+                uint8_t b0 = bb & 0x0F, b1 = (bb >> 4);
+                int diff0 = int(a0) - int(b0);
+                acc += diff0 * diff0 * double(scale_sq[d]);
+                if (d+1 < dim) {
+                    int diff1 = int(a1) - int(b1);
+                    acc += diff1 * diff1 * double(scale_sq[d+1]);
+                }
+            }
+            return float(acc);
+        }
+    }
+
+    void compute_scale_min(const std::vector<std::vector<T>>& samples, double levels) {
+        const size_t n = samples.size();
+        for (size_t d = 0; d < dim; ++d) {
+            T lo = samples[0][d], hi = lo;
+            for (size_t i = 1; i < n; ++i) {
+                T v = samples[i][d];
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+            minval[d] = lo;
+            scale[d] = (hi - lo) / levels;
+            if (scale[d] == 0) scale[d] = 1.0;
+            scale_sq[d] = scale[d]*scale[d];
+        }
+    }
+
+    // --- Quantize functions ---
+    void quantize_bin(const T* emb, uint8_t* out) const {
+        std::memset(out, 0, bytes_per_vector);
+        for (size_t i = 0; i < dim; ++i)
+            if (emb[i] > thresholds[i]) out[i >> 3] |= uint8_t(1u << (i & 7));
+    }
+
+    void quantize_int8(const T* emb, uint8_t* out) const {
+        for (size_t d = 0; d < dim; ++d) {
+            float v = float((emb[d] - minval[d]) / scale[d]);
+            int qi = int(std::nearbyintf(v));
+            qi = std::clamp(qi, 0, 255);
+            out[d] = uint8_t(qi);
+        }
+    }
+
+    void quantize_int4(const T* emb, uint8_t* out) const {
+        size_t idx = 0;
+        for (size_t d = 0; d < dim; d += 2) {
+            float v0 = float((emb[d] - minval[d]) / scale[d]);
+            int q0 = std::clamp(int(std::nearbyintf(v0)), 0, 15);
+            int q1 = 0;
+            if (d + 1 < dim) {
+                float v1 = float((emb[d+1] - minval[d+1]) / scale[d+1]);
+                q1 = std::clamp(int(std::nearbyintf(v1)), 0, 15);
+            }
+            out[idx++] = uint8_t((q1 << 4) | (q0 & 0x0F));
+        }
+    }
+};
+
+} // namespace hnswlib
+

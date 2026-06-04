@@ -1,0 +1,52 @@
+
+
+// Inside the Space class
+static thread_local float current_query_energy;
+
+// In search:
+MySpace::current_query_energy = calculated_energy;
+index->searchKnn(query_data, k);
+
+
+
+
+
+
+
+
+
+
+// 1. Create context on the stack (very fast)
+QuantizedContext ctx;
+ctx.query_energy = calculate_query_energy(quantized.data(), dim_);
+
+// 2. Temporarily point the space's param to this context
+// This requires adding a set_dist_param to your concrete Space class
+my_quant_space->set_dist_param(&ctx);
+
+// 3. Search
+auto results = index_->searchKnn(quantized.data(), k);
+
+// 4. Reset (to avoid dangling pointers)
+my_quant_space->set_dist_param(nullptr);
+
+
+
+
+The Upstream-Clean Approach
+
+HNSWlib's SpaceInterface has a method:
+virtual void *get_dist_func_param() = 0;
+
+This void* is passed as the third argument to every distance calculation. Instead of polluting the base class or using thread-local globals, you should use this pointer to pass a context struct.
+
+
+
+static float
+INT4DotProduct(const void *pVect1, const void *pVect2, const void *qty_ptr) {
+    // ... your accumulation logic ...
+    
+    QuantizedContext* ctx = (QuantizedContext*)qty_ptr;
+    float dot = (float)acc / (float)ctx->query_energy;
+    return 1.0f - dot;
+}

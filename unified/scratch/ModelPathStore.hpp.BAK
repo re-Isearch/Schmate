@@ -1,0 +1,173 @@
+#ifndef MODEL_PATH_STORE_H
+#define MODEL_PATH_STORE_H
+
+#include <string>
+#include <array>
+#include <optional>
+#include <fstream>
+#include <cstring>
+
+// Fast key-value store for up to 100 model path mappings
+class ModelPathStore {
+public:
+    static constexpr size_t MAX_ENTRIES = 100;
+    static constexpr size_t KEY_SIZE = 64;
+    static constexpr size_t VALUE_SIZE = 512;
+    
+    struct Entry {
+        char key[KEY_SIZE];
+        char value[VALUE_SIZE];
+        bool active;
+        
+        Entry() : key{0}, value{0}, active(false) {}
+    };
+    
+private:
+    std::array<Entry, MAX_ENTRIES> entries;
+    size_t count;
+    
+public:
+    ModelPathStore() : count(0) {
+        for (auto& e : entries) {
+            e.active = false;
+        }
+    }
+    
+    // Set a key-value pair
+    bool set(const std::string& key, const std::string& value) {
+        if (key.empty() || key.size() >= KEY_SIZE || value.size() >= VALUE_SIZE) {
+            return false;
+        }
+        
+        // Check if key exists
+        for (auto& e : entries) {
+            if (e.active && std::strcmp(e.key, key.c_str()) == 0) {
+                std::strncpy(e.value, value.c_str(), VALUE_SIZE - 1);
+                e.value[VALUE_SIZE - 1] = '\0';
+                return true;
+            }
+        }
+        
+        // Add new entry
+        if (count >= MAX_ENTRIES) {
+            return false;
+        }
+        
+        for (auto& e : entries) {
+            if (!e.active) {
+                std::strncpy(e.key, key.c_str(), KEY_SIZE - 1);
+                e.key[KEY_SIZE - 1] = '\0';
+                std::strncpy(e.value, value.c_str(), VALUE_SIZE - 1);
+                e.value[VALUE_SIZE - 1] = '\0';
+                e.active = true;
+                count++;
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // Get value by key
+    std::optional<std::string> get(const std::string& key) const {
+        for (const auto& e : entries) {
+            if (e.active && std::strcmp(e.key, key.c_str()) == 0) {
+                return std::string(e.value);
+            }
+        }
+        return std::nullopt;
+    }
+    
+    // Remove a key
+    bool remove(const std::string& key) {
+        for (auto& e : entries) {
+            if (e.active && std::strcmp(e.key, key.c_str()) == 0) {
+                e.active = false;
+                count--;
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    // Get count of active entries
+    size_t size() const { return count; }
+    
+    // Clear all entries
+    void clear() {
+        for (auto& e : entries) {
+            e.active = false;
+        }
+        count = 0;
+    }
+    
+    // Save to binary file
+    bool save(const std::string& filename) const {
+        std::ofstream file(filename, std::ios::binary);
+        if (!file) return false;
+        
+        file.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        file.write(reinterpret_cast<const char*>(entries.data()), 
+                   sizeof(Entry) * MAX_ENTRIES);
+        
+        return file.good();
+    }
+    
+    // Load from binary file
+    bool load(const std::string& filename) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file) return false;
+        
+        file.read(reinterpret_cast<char*>(&count), sizeof(count));
+        file.read(reinterpret_cast<char*>(entries.data()), 
+                  sizeof(Entry) * MAX_ENTRIES);
+        
+        return file.good();
+    }
+    
+    // Export to text file
+    bool exportToText(const std::string& filename) const {
+        std::ofstream file(filename);
+        if (!file) return false;
+        
+        for (const auto& e : entries) {
+            if (e.active) {
+                file << e.key << "=" << e.value << "\n";
+            }
+        }
+        
+        return file.good();
+    }
+    
+    // Import from text file (key=value format, one per line)
+    bool importFromText(const std::string& filename) {
+        std::ifstream file(filename);
+        if (!file) return false;
+        
+        clear();
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            
+            size_t pos = line.find('=');
+            if (pos != std::string::npos) {
+                std::string key = line.substr(0, pos);
+                std::string value = line.substr(pos + 1);
+                
+                // Trim whitespace
+                key.erase(0, key.find_first_not_of(" \t"));
+                key.erase(key.find_last_not_of(" \t") + 1);
+                value.erase(0, value.find_first_not_of(" \t"));
+                value.erase(value.find_last_not_of(" \t") + 1);
+                
+                if (!set(key, value)) {
+                    return false;
+                }
+            }
+        }
+        
+        return true;
+    }
+};
+
+#endif // MODEL_PATH_STORE_H

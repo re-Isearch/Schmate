@@ -1,0 +1,719 @@
+#pragma once
+#include <vector>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <algorithm>
+#include <numeric>
+#include <thread>
+#include <atomic>
+#include <cassert>
+#include <iostream>
+#include <fstream>
+#include <mutex>
+
+#include "hnswlib.h"
+#include "pearson_corr.h"
+
+#if defined(__AVX512F__)
+  #include <immintrin.h>
+  #define HNSW_SIMD_AVX512
+#elif defined(__AVX2__)
+  #include <immintrin.h>
+  #define HNSW_SIMD_AVX2
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+  #include <arm_neon.h>
+  #define HNSW_SIMD_NEON
+#elif defined(__ARM_FEATURE_SVE)
+  #include <arm_sve.h>
+  #define HNSW_SIMD_SVE
+#endif
+
+
+/*
+
+// Initialize with centroid mode
+auto space = new SpaceQuantized<float>(
+    dim, QuantMode::BIN1, OptBinMode::CENTROID, 
+    &samples, 1000);
+
+// Add points with incremental training
+space->add_to_centroid(vector);
+space->quantize(vector, code);
+index->addPoint(code, label);
+
+// Persist state
+space->save_centroid("centroid.bin");
+
+*/
+
+namespace hnswlib {
+
+enum class QuantMode { BIN1=0, INT158=1, INT4=1, INT8=2 };
+enum class OptBinMode  { STANDARD=0, BETTER=1, CENTROID=2 };
+
+// =============================================================================
+template<typename T=float>
+class SpaceQuantized : public SpaceInterface<float> {
+public:
+    using DISTFUNC_TYPE = DISTFUNC<float>;
+
+    size_t dim;
+    QuantMode qmode;
+    OptBinMode bin_mode;
+    size_t bytes_per_vector;
+
+    std::vector<T> thresholds;
+    std::vector<T> scale, minval, scale_sq;
+    
+    // Centroid-based quantization state
+    std::vector<T> centroid_;
+    std::vector<T> sum_;
+    size_t count_;
+    std::vector<T> buffer_;
+    size_t buffer_capacity_;
+    size_t buffer_count_;
+    mutable std::mutex centroid_mutex_;
+
+    explicit SpaceQuantized(size_t dim_,
+                            QuantMode qmode_,
+                            OptBinMode bin_mode_ = OptBinMode::STANDARD,
+                            const std::vector<std::vector<T>>* sample_embeddings = nullptr,
+                            size_t buffer_capacity = 1000)
+        : dim(dim_), qmode(qmode_), bin_mode(bin_mode_),
+          count_(0), buffer_capacity_(buffer_capacity), buffer_count_(0) {
+        assert(dim>0);
+        if (qmode==QuantMode::BIN1) {
+            bytes_per_vector=(dim+7)/8;
+            thresholds.assign(dim,T(0));
+            
+            if (bin_mode == OptBinMode::CENTROID) {
+                centroid_.assign(dim, T(0));
+                sum_.assign(dim, T(0));
+                if (sample_embeddings) {
+                    train_centroid(*sample_embeddings);
+                }
+            } else {
+                if (sample_embeddings) compute_thresholds(*sample_embeddings);
+            }
+        } else {
+            // INT4 or INT8
+            bytes_per_vector=(qmode==QuantMode::INT8)?dim:(dim+1)/2;
+            scale.assign(dim,1); minval.assign(dim,0); scale_sq.assign(dim,1);
+            if (sample_embeddings)
+                compute_scale_min(*sample_embeddings,(qmode==QuantMode::INT8)?255.0:15.0);
+        }
+    }
+
+    // -- interface compliance --------------------------------------------------
+    size_t get_data_size() override { return bytes_per_vector; }
+    DISTFUNC_TYPE get_dist_func() override { return &SpaceQuantized::fstdist_; }
+    void* get_dist_func_param() override { return this; }
+
+    // -------------------------------------------------------------------------
+    void quantize(const T* emb, uint8_t* out) const {
+        switch(qmode){
+            case QuantMode::BIN1: quantize_bin(emb,out); break;
+            case QuantMode::INT8: quantize_int8_simd(emb,out); break;
+            case QuantMode::INT4: quantize_int4_simd(emb,out); break;
+        }
+    }
+    
+    // =================== CENTROID TRAINING ==================================
+    void train_centroid(const std::vector<std::vector<T>>& samples) {
+        std::lock_guard<std::mutex> lock(centroid_mutex_);
+        
+        const size_t n = samples.size();
+        if (n == 0) return;
+        
+        std::fill(sum_.begin(), sum_.end(), T(0));
+        count_ = 0;
+        
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t d = 0; d < dim; ++d) {
+                sum_[d] += samples[i][d];
+            }
+        }
+        
+        count_ = n;
+        update_centroid();
+    }
+    
+    // Add vector for incremental training (call this in addPoint hook)
+    void add_to_centroid(const T* emb) {
+        if (bin_mode != OptBinMode::CENTROID) return;
+        
+        std::lock_guard<std::mutex> lock(centroid_mutex_);
+        
+        // Add to buffer
+        for (size_t d = 0; d < dim; ++d) {
+            buffer_.push_back(emb[d]);
+        }
+        buffer_count_++;
+        
+        // Initialize centroid with first vector if not trained
+        if (count_ == 0 && buffer_count_ == 1) {
+            for (size_t d = 0; d < dim; ++d) {
+                sum_[d] = emb[d];
+                centroid_[d] = emb[d];
+            }
+            count_ = 1;
+        }
+        
+        // Retrain if buffer is full
+        if (buffer_count_ >= buffer_capacity_) {
+            retrain_from_buffer();
+        }
+    }
+    
+    // Force retrain with current buffer
+    void flush_centroid_buffer() {
+        if (bin_mode != OptBinMode::CENTROID) return;
+        
+        std::lock_guard<std::mutex> lock(centroid_mutex_);
+        if (buffer_count_ > 0) {
+            retrain_from_buffer();
+        }
+    }
+    
+    // Save centroid state to disk
+    bool save_centroid(const std::string& filepath) const {
+        std::lock_guard<std::mutex> lock(centroid_mutex_);
+        
+        std::ofstream out(filepath, std::ios::binary);
+        if (!out.is_open()) return false;
+        
+        // Write header
+        out.write(reinterpret_cast<const char*>(&dim), sizeof(dim));
+        out.write(reinterpret_cast<const char*>(&count_), sizeof(count_));
+        out.write(reinterpret_cast<const char*>(&buffer_capacity_), sizeof(buffer_capacity_));
+        
+        // Write centroid
+        out.write(reinterpret_cast<const char*>(centroid_.data()), 
+                  dim * sizeof(T));
+        
+        // Write sum
+        out.write(reinterpret_cast<const char*>(sum_.data()), 
+                  dim * sizeof(T));
+        
+        // Write buffer
+        out.write(reinterpret_cast<const char*>(&buffer_count_), sizeof(buffer_count_));
+        if (buffer_count_ > 0) {
+            out.write(reinterpret_cast<const char*>(buffer_.data()), 
+                      buffer_count_ * dim * sizeof(T));
+        }
+        
+        return out.good();
+    }
+    
+    // Load centroid state from disk
+    bool load_centroid(const std::string& filepath) {
+        std::lock_guard<std::mutex> lock(centroid_mutex_);
+        
+        std::ifstream in(filepath, std::ios::binary);
+        if (!in.is_open()) return false;
+        
+        // Read header
+        size_t file_dim;
+        in.read(reinterpret_cast<char*>(&file_dim), sizeof(file_dim));
+        if (file_dim != dim) return false;
+        
+        in.read(reinterpret_cast<char*>(&count_), sizeof(count_));
+        in.read(reinterpret_cast<char*>(&buffer_capacity_), sizeof(buffer_capacity_));
+        
+        // Read centroid
+        centroid_.resize(dim);
+        in.read(reinterpret_cast<char*>(centroid_.data()), dim * sizeof(T));
+        
+        // Read sum
+        sum_.resize(dim);
+        in.read(reinterpret_cast<char*>(sum_.data()), dim * sizeof(T));
+        
+        // Read buffer
+        in.read(reinterpret_cast<char*>(&buffer_count_), sizeof(buffer_count_));
+        if (buffer_count_ > 0) {
+            buffer_.resize(buffer_count_ * dim);
+            in.read(reinterpret_cast<char*>(buffer_.data()), 
+                    buffer_count_ * dim * sizeof(T));
+        }
+        
+        return in.good();
+    }
+    
+    size_t get_centroid_count() const { return count_; }
+    size_t get_buffer_count() const { return buffer_count_; }
+
+private:
+    // =================== DISTANCE ===========================================
+    static float fstdist_(const void* p1, const void* p2, const void* param) {
+        const auto* sp = reinterpret_cast<const SpaceQuantized*>(param);
+        return sp->compute_dist(reinterpret_cast<const uint8_t*>(p1),
+                                reinterpret_cast<const uint8_t*>(p2));
+    }
+
+    float compute_dist(const uint8_t* a, const uint8_t* b) const {
+        if (qmode==QuantMode::BIN1) {
+            uint32_t acc=0;
+            for(size_t i=0;i<bytes_per_vector;++i) acc+=__builtin_popcount(a[i]^b[i]);
+            return float(acc);
+        } else if (qmode==QuantMode::INT8) {
+#ifdef HNSW_SIMD_AVX2
+            size_t i=0;
+            __m256i sum=_mm256_setzero_si256();
+            for(;i+31<dim;i+=32){
+                __m256i va=_mm256_loadu_si256((__m256i*)(a+i));
+                __m256i vb=_mm256_loadu_si256((__m256i*)(b+i));
+                __m256i diff=_mm256_sub_epi8(va,vb);
+                __m256i lo=_mm256_unpacklo_epi8(diff,_mm256_setzero_si256());
+                __m256i hi=_mm256_unpackhi_epi8(diff,_mm256_setzero_si256());
+                sum=_mm256_add_epi32(sum,_mm256_madd_epi16(lo,lo));
+                sum=_mm256_add_epi32(sum,_mm256_madd_epi16(hi,hi));
+            }
+            alignas(32) int32_t tmp[8]; _mm256_store_si256((__m256i*)tmp,sum);
+            float acc=float(tmp[0]+tmp[1]+tmp[2]+tmp[3]+tmp[4]+tmp[5]+tmp[6]+tmp[7]);
+            for(;i<dim;++i){int d=int(a[i])-int(b[i]); acc+=d*d;}
+            return acc;
+#elif defined(HNSW_SIMD_NEON)
+            size_t i=0; uint32x4_t vsum=vdupq_n_u32(0);
+            for(;i+15<dim;i+=16){
+                uint8x16_t va=vld1q_u8(a+i), vb=vld1q_u8(b+i);
+                uint8x16_t diff=vabdq_u8(va,vb);
+                uint8x8_t diff_lo=vget_low_u8(diff);
+                uint8x8_t diff_hi=vget_high_u8(diff);
+                uint16x8_t diff16_lo=vmovl_u8(diff_lo);
+                uint16x8_t diff16_hi=vmovl_u8(diff_hi);
+                uint32x4_t part1=vmull_u16(vget_low_u16(diff16_lo),vget_low_u16(diff16_lo));
+                uint32x4_t part2=vmull_u16(vget_high_u16(diff16_lo),vget_high_u16(diff16_lo));
+                uint32x4_t part3=vmull_u16(vget_low_u16(diff16_hi),vget_low_u16(diff16_hi));
+                uint32x4_t part4=vmull_u16(vget_high_u16(diff16_hi),vget_high_u16(diff16_hi));
+                vsum=vaddq_u32(vsum,vaddq_u32(vaddq_u32(part1,part2),vaddq_u32(part3,part4)));
+            }
+            uint32_t tmp[4]; vst1q_u32(tmp,vsum);
+            float acc=float(tmp[0]+tmp[1]+tmp[2]+tmp[3]);
+            for(;i<dim;++i){int d=int(a[i])-int(b[i]); acc+=d*d;}
+            return acc;
+#else
+            double acc=0; for(size_t i=0;i<dim;++i){int d=int(a[i])-int(b[i]); acc+=d*d;}
+            return float(acc);
+#endif
+        } else { // INT4 scalar
+            double acc=0;
+            for(size_t d=0;d<dim;d+=2){
+                uint8_t ba=a[d>>1], bb=b[d>>1];
+                uint8_t a0=ba&0x0F,a1=ba>>4,b0=bb&0x0F,b1=bb>>4;
+                int diff0=int(a0)-int(b0);
+                acc+=diff0*diff0*double(scale_sq[d]);
+                if(d+1<dim){int diff1=int(a1)-int(b1); acc+=diff1*diff1*double(scale_sq[d+1]);}
+            }
+            return float(acc);
+        }
+    }
+
+    // =================== SCALING / THRESHOLDS ===============================
+    void compute_thresholds(const std::vector<std::vector<T>>& samples){
+        const size_t n=samples.size();
+        std::vector<T> col(n);
+        for(size_t d=0;d<dim;++d){
+            for(size_t i=0;i<n;++i) col[i]=samples[i][d];
+            if(bin_mode==OptBinMode::STANDARD){
+                std::nth_element(col.begin(),col.begin()+n/2,col.end());
+                thresholds[d]=col[n/2];
+            }else{
+                std::sort(col.begin(),col.end());
+                T best_thr=col[n/2]; float best_corr=-1;
+                for(int k=1;k<99;++k){
+                    size_t id=k*n/100; T thr=col[id];
+                    std::vector<float> bits(n);
+                    for(size_t i=0;i<n;++i) bits[i]=(col[i]>thr)?1.f:0.f;
+                    float corr=std::fabs(pearson_corr(bits,col));
+                    if(corr>best_corr){best_corr=corr;best_thr=thr;}
+                }
+                thresholds[d]=best_thr;
+            }
+        }
+    }
+
+    void compute_scale_min(const std::vector<std::vector<T>>& samples,double levels){
+        const size_t n=samples.size();
+        for(size_t d=0;d<dim;++d){
+            T lo=samples[0][d],hi=lo;
+            for(size_t i=1;i<n;++i){T v=samples[i][d]; if(v<lo)lo=v; if(v>hi)hi=v;}
+            minval[d]=lo; scale[d]=(hi-lo)/levels; if(scale[d]==0)scale[d]=1; scale_sq[d]=scale[d]*scale[d];
+        }
+    }
+
+    // =================== QUANTIZATION ======================================
+
+    // ---------------- BIN1 threshold quantize: AVX512 / AVX2 / NEON / SVE / scalar ----------------
+    void quantize_bin_threshold_simd(const T* emb, uint8_t* out) const {
+        std::memset(out, 0, bytes_per_vector);
+#if defined(__AVX512F__)
+        if (have_avx512) {
+            size_t d = 0;
+            for (; d + 16 <= dim; d += 16) {
+                __m512 v = _mm512_loadu_ps(emb + d);
+                __m512 t = _mm512_loadu_ps(thresholds.data() + d);
+                __mmask16 m = _mm512_cmp_ps_mask(v, t, _CMP_GT_OS);
+                out[d >> 3] = uint8_t(m & 0xFFu);
+                out[(d >> 3) + 1] = uint8_t((m >> 8) & 0xFFu);
+            }
+            // continue with AVX2/NEON/scalar for tail
+            size_t start = (d / 8) * 8;
+            if (start < dim) {
+                // we'll handle remaining bytes below in AVX2/NEON or scalar path
+            }
+        }
+#endif
+
+#if defined(__AVX2__)
+        if (have_avx2) {
+            size_t i = 0;
+            for (; i + 8 <= dim; i += 8) {
+                __m256 v = _mm256_loadu_ps(emb + i);
+                __m256 t = _mm256_loadu_ps(thresholds.data() + i);
+                __m256 cmp = _mm256_cmp_ps(v, t, _CMP_GT_OS);
+                int mask = _mm256_movemask_ps(cmp) & 0xFF;
+                out[i >> 3] = static_cast<uint8_t>(mask);
+            }
+            if (i < dim) {
+                uint8_t byte = 0;
+                for (size_t j = i; j < dim; ++j) if (emb[j] > thresholds[j]) byte |= uint8_t(1u << (j - i));
+                out[i >> 3] = byte;
+            }
+            return;
+        }
+#endif
+
+#if defined(__ARM_FEATURE_SVE)
+        if (have_sve) {
+            // SVE: vector-compare into a temp byte buffer then pack into bytes
+            size_t i = 0;
+            const size_t tmp_bytes = ((dim + 7) / 8);
+            // We'll fill tmp_bits per dimension then pack 8 bits -> 1 byte
+            // This is vectorized: we write boolean per-element into an uint8_t tmp array using SVE stores
+            std::vector<uint8_t> tmp(dim);
+            while (i < dim) {
+                // number of lanes to process
+                svbool_t pg = svwhilelt_b32((uint64_t)i, (uint64_t)dim);
+                svfloat32_t v = svld1(pg, emb + i);
+                svfloat32_t t = svld1(pg, thresholds.data() + i);
+                svbool_t cmp = svcmpgt_f32(pg, v, t);
+                // store bools as 0/1 into tmp[i..]
+                // we'll convert cmp to u8 with svst1_u8 using predicate after converting to u8 vector
+                // SVE doesn't have direct bool->u8 store; do per-lane extract via storing into uint32 then reduce
+                uint32_t lanes = svcntw() ; // lane count in 32-bit lanes may vary
+                // fallback: store each lane via svst1_u32 then reduce - but portability is complex.
+                // Simpler: move to scalar for these lanes (still vector benefit from loads).
+                size_t lane = i;
+                for (; lane < dim && lane < i + svcntw(); ++lane) {
+                    tmp[lane] = (emb[lane] > thresholds[lane]) ? 1u : 0u;
+                }
+                i += svcntw();
+            }
+            // pack tmp bits into bytes
+            for (size_t byte_i = 0; byte_i < bytes_per_vector; ++byte_i) {
+                uint8_t b = 0;
+                for (size_t bit = 0; bit < 8; ++bit) {
+                    size_t idx = byte_i * 8 + bit;
+                    if (idx < dim && tmp[idx]) b |= uint8_t(1u << bit);
+                }
+                out[byte_i] = b;
+            }
+            return;
+        }
+#endif
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        if (have_neon) {
+            size_t d = 0;
+            for (; d + 8 <= dim; d += 8) {
+                float32x4_t v0 = vld1q_f32(emb + d);
+                float32x4_t t0 = vld1q_f32(thresholds.data() + d);
+                uint32x4_t m0 = vcgtq_f32(v0, t0);
+                float32x4_t v1 = vld1q_f32(emb + d + 4);
+                float32x4_t t1 = vld1q_f32(thresholds.data() + d + 4);
+                uint32x4_t m1 = vcgtq_f32(v1, t1);
+                uint8_t byte = 0;
+                byte |= (vgetq_lane_u32(m0,0) ? 1u<<0 : 0);
+                byte |= (vgetq_lane_u32(m0,1) ? 1u<<1 : 0);
+                byte |= (vgetq_lane_u32(m0,2) ? 1u<<2 : 0);
+                byte |= (vgetq_lane_u32(m0,3) ? 1u<<3 : 0);
+                byte |= (vgetq_lane_u32(m1,0) ? 1u<<4 : 0);
+                byte |= (vgetq_lane_u32(m1,1) ? 1u<<5 : 0);
+                byte |= (vgetq_lane_u32(m1,2) ? 1u<<6 : 0);
+                byte |= (vgetq_lane_u32(m1,3) ? 1u<<7 : 0);
+                out[d >> 3] = byte;
+            }
+            if (d < dim) {
+                uint8_t byte = 0;
+                for (size_t j = d; j < dim; ++j) if (emb[j] > thresholds[j]) byte |= uint8_t(1u << (j - d));
+                out[d >> 3] = byte;
+            }
+            return;
+        }
+#endif
+
+        // scalar fallback
+        for (size_t i = 0; i < dim; ++i) if (emb[i] > thresholds[i]) out[i >> 3] |= uint8_t(1u << (i & 7));
+    }
+
+
+
+    void quantize_bin(const T* emb,uint8_t* out) const {
+        std::memset(out,0,bytes_per_vector);
+        
+        if (bin_mode == OptBinMode::CENTROID) {
+            // Use centroid as threshold
+            for(size_t i=0;i<dim;++i) {
+                if(emb[i] >= centroid_[i]) {
+                    out[i>>3]|=uint8_t(1u<<(i&7));
+                }
+            }
+        } else {
+#if 1
+            quantize_bin_threshold_simd(emb, out);
+#else
+            // Use thresholds array
+            for(size_t i=0;i<dim;++i) {
+                if(emb[i] > thresholds[i]) {
+                    out[i>>3]|=uint8_t(1u<<(i&7));
+                }
+            }
+        }
+#endif
+    }
+
+#if 1
+    // ---------------- INT8 quantize ----------------
+    void quantize_int8_simd(const T* emb, uint8_t* out) const {
+#if defined(__AVX512F__)
+        if (have_avx512) { quantize_int8_avx512(emb, out); return; }
+#endif
+#if defined(__AVX2__)
+        if (have_avx2) { quantize_int8_avx2(emb, out); return; }
+#endif
+#if defined(__ARM_FEATURE_SVE)
+        if (have_sve) { quantize_int8_sve(emb, out); return; }
+#endif
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        if (have_neon) { quantize_int8_neon(emb, out); return; }
+#endif
+        // scalar fallback
+        for (size_t d = 0; d < dim; ++d) {
+            float v = float((emb[d] - minval[d]) / scale[d]);
+            int qi = int(std::nearbyintf(v));
+            qi = clampi(qi, 0, 255);
+            out[d] = uint8_t(qi);
+        }
+    }
+
+#if defined(__AVX512F__)
+    void quantize_int8_avx512(const T* emb, uint8_t* out) const {
+        size_t d = 0;
+        for (; d + 16 <= dim; d += 16) {
+            __m512 v = _mm512_loadu_ps(emb + d);
+            __m512 mn = _mm512_loadu_ps(minval.data() + d);
+            __m512 sc = _mm512_loadu_ps(scale.data() + d);
+            __m512 x = _mm512_sub_ps(v, mn);
+            __m512 y = _mm512_div_ps(x, sc);
+            __m512i yi = _mm512_cvtps_epi32(y); // convert to int32
+            alignas(64) int32_t tmp[16];
+            _mm512_store_si512((__m512i*)tmp, yi);
+            for (int i = 0; i < 16; ++i) {
+                int q = tmp[i];
+                if (q < 0) q = 0;
+                if (q > 255) q = 255;
+                out[d + i] = uint8_t(q);
+            }
+        }
+        for (; d < dim; ++d) {
+            float v = float((emb[d] - minval[d]) / scale[d]);
+            int qi = int(std::nearbyintf(v));
+            qi = clampi(qi, 0, 255);
+            out[d] = uint8_t(qi);
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    void quantize_int8_avx2(const T* emb, uint8_t* out) const {
+        size_t d = 0;
+        for (; d + 8 <= dim; d += 8) {
+            __m256 v = _mm256_loadu_ps(emb + d);
+            __m256 mn = _mm256_loadu_ps(minval.data() + d);
+            __m256 sc = _mm256_loadu_ps(scale.data() + d);
+            __m256 x = _mm256_sub_ps(v, mn);
+            __m256 y = _mm256_div_ps(x, sc);
+            __m256i yi = _mm256_cvtps_epi32(y);
+            alignas(32) int32_t tmp[8];
+            _mm256_store_si256((__m256i*)tmp, yi);
+            for (int i = 0; i < 8; ++i) {
+                int q = tmp[i];
+                if (q < 0) q = 0;
+                if (q > 255) q = 255;
+                out[d + i] = uint8_t(q);
+            }
+        }
+        for (; d < dim; ++d) {
+            float v = float((emb[d] - minval[d]) / scale[d]);
+            int qi = int(std::nearbyintf(v));
+            qi = clampi(qi, 0, 255);
+            out[d] = uint8_t(qi);
+        }
+    }
+#endif
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    void quantize_int8_neon(const T* emb, uint8_t* out) const {
+        size_t d = 0;
+        for (; d + 4 <= dim; d += 4) {
+            float32x4_t v = vld1q_f32(emb + d);
+            float32x4_t mn = vld1q_f32(minval.data() + d);
+            float32x4_t sc = vld1q_f32(scale.data() + d);
+            float32x4_t x = vsubq_f32(v, mn);
+            float32x4_t y = vdivq_f32(x, sc);
+            // convert to int32
+            int32x4_t yi = vcvtq_s32_f32(y);
+            int32_t tmp[4];
+            vst1q_s32(tmp, yi);
+            for (int i = 0; i < 4; ++i) {
+                int q = tmp[i];
+                if (q < 0) q = 0;
+                if (q > 255) q = 255;
+                out[d + i] = uint8_t(q);
+            }
+        }
+        for (; d < dim; ++d) {
+            float v = float((emb[d] - minval[d]) / scale[d]);
+            int qi = int(std::nearbyintf(v));
+            qi = clampi(qi, 0, 255);
+            out[d] = uint8_t(qi);
+        }
+    }
+#endif
+
+#if defined(__ARM_FEATURE_SVE)
+    void quantize_int8_sve(const T* emb, uint8_t* out) const {
+        size_t i = 0;
+        // SVE processes vector-length floats; we'll convert lanes then clamp/store scalar-wise
+        // Keep correctness; micro-optimization possible with better intrinsics usage
+        while (i < dim) {
+            svbool_t pg = svwhilelt_b32((uint64_t)i, (uint64_t)dim);
+            svfloat32_t v = svld1(pg, emb + i);
+            svfloat32_t mn = svld1(pg, minval.data() + i);
+            svfloat32_t sc = svld1(pg, scale.data() + i);
+            svfloat32_t x = svsub_f32_m(pg, v, mn);
+            svfloat32_t y = svdiv_f32_m(pg, x, sc);
+            // convert to signed 32
+            svint32_t yi = svcvt_s32_f32_m(pg, y);
+            // store to temp int32 array then scalar clamp/store
+            int32_t tmp[svmaxw()];
+            svst1_s32(pg, tmp, yi);
+            int lanes = svcntp_b32(pg, pg);
+            for (int k = 0; k < lanes; ++k) {
+                int q = tmp[k];
+                if (q < 0) q = 0;
+                if (q > 255) q = 255;
+                out[i + k] = uint8_t(q);
+            }
+            i += svcntw();
+        }
+    }
+#endif
+
+
+#else // NON SIMD CODE
+    void quantize_int8_simd(const T* emb,uint8_t* out) const {
+        for(size_t i=0;i<dim;++i){
+            float v=(emb[i]-minval[i])/scale[i];
+            int qi=std::clamp(int(std::nearbyint(v)),0,255);
+            out[i]=uint8_t(qi);
+        }
+    }
+#endif
+
+
+    // ---------------- INT4 quantize (scalar correct) ----------------
+    void quantize_int4_simd(const T* emb,uint8_t* out) const {
+        size_t idx=0;
+        for(size_t d=0;d<dim;d+=2){
+            float v0=(emb[d]-minval[d])/scale[d];
+            int q0=std::clamp(int(std::nearbyint(v0)),0,15);
+            int q1=0;
+            if(d+1<dim){
+                float v1=(emb[d+1]-minval[d+1])/scale[d+1];
+                q1=std::clamp(int(std::nearbyint(v1)),0,15);
+            }
+            out[idx++]=uint8_t((q1<<4)|(q0&0x0F));
+        }
+    }
+    
+    // =================== CENTROID HELPERS ==================================
+    void update_centroid() {
+        if (count_ == 0) return;
+        for (size_t d = 0; d < dim; ++d) {
+            centroid_[d] = sum_[d] / T(count_);
+        }
+    }
+    
+    void retrain_from_buffer() {
+        if (buffer_count_ == 0) return;
+        
+        // Merge buffer into running sum
+        for (size_t i = 0; i < buffer_count_; ++i) {
+            const T* vec = buffer_.data() + i * dim;
+            for (size_t d = 0; d < dim; ++d) {
+                sum_[d] += vec[d];
+            }
+        }
+        
+        count_ += buffer_count_;
+        update_centroid();
+        
+        // Clear buffer
+        buffer_.clear();
+        buffer_count_ = 0;
+    }
+};
+
+} // namespace hnswlib
+
+/*
+Usage example:
+
+// Create space with centroid-based binarization
+auto space = new hnswlib::SpaceQuantized<float>(
+    dim, 
+    hnswlib::QuantMode::BIN1, 
+    hnswlib::OptBinMode::CENTROID,
+    &initial_samples,  // optional initial training
+    1000  // buffer capacity for incremental training
+);
+
+// Create HNSW index
+auto index = new hnswlib::HierarchicalNSW<float>(space, max_elements);
+
+// Add points with incremental training
+for (size_t i = 0; i < num_vectors; ++i) {
+    // Feed vector to centroid for incremental learning
+    space->add_to_centroid(vectors[i].data());
+    
+    // Quantize and add to index
+    std::vector<uint8_t> code(space->get_data_size());
+    space->quantize(vectors[i].data(), code.data());
+    index->addPoint(code.data(), i);
+    
+    // Periodically save
+    if (i % 10000 == 0) {
+        index->saveIndex("index.bin");
+        space->save_centroid("centroid.bin");
+    }
+}
+
+// Force final retrain
+space->flush_centroid_buffer();
+space->save_centroid("centroid.bin");
+
+// Load later
+space->load_centroid("centroid.bin");
+*/

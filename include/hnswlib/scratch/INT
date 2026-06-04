@@ -1,0 +1,223 @@
+#pragma once
+#include <vector>
+#include <cstdint>
+#include <cmath>
+#include <algorithm>
+
+#if defined(__AVX512FP16__)
+  #include <immintrin.h>
+  #define HAS_AVX512FP16 1
+#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC__) || defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC__)
+  #include <arm_neon.h>
+  #define HAS_NEON_FP16 1
+#endif
+
+namespace hnswlib {
+
+enum class StorageType { BIN1, INT2, INT4, INT8, INT16, FP16 };
+
+class IntStorage {
+public:
+    StorageType type;
+    size_t dim;
+    std::vector<uint8_t> data;
+
+    explicit IntStorage(StorageType t, size_t d)
+        : type(t), dim(d)
+    {
+        size_t bits = bits_per_element();
+        data.resize((dim * bits + 7) / 8);
+    }
+
+    size_t bits_per_element() const noexcept {
+        switch (type) {
+            case StorageType::BIN1:  return 1;
+            case StorageType::INT2:  return 2;
+            case StorageType::INT4:  return 4;
+            case StorageType::INT8:  return 8;
+            case StorageType::INT16: return 16;
+            case StorageType::FP16:  return 16;
+        }
+        return 0;
+    }
+
+    //------------------------------------------------------------------
+    // Quantize and dequantize
+    //------------------------------------------------------------------
+    void quantize(const float* src, float scale = 1.0f) {
+        switch (type) {
+            case StorageType::BIN1:  quantize_bin1(src); break;
+            case StorageType::INT2:  quantize_int2(src, scale); break;
+            case StorageType::INT4:  quantize_int4(src, scale); break;
+            case StorageType::INT8:  quantize_int8(src, scale); break;
+            case StorageType::INT16: quantize_int16(src, scale); break;
+            case StorageType::FP16:  quantize_fp16(src); break;
+        }
+    }
+
+    void dequantize(float* dst, float scale = 1.0f) const {
+        switch (type) {
+            case StorageType::BIN1:  dequantize_bin1(dst); break;
+            case StorageType::INT2:  dequantize_int2(dst, scale); break;
+            case StorageType::INT4:  dequantize_int4(dst, scale); break;
+            case StorageType::INT8:  dequantize_int8(dst, scale); break;
+            case StorageType::INT16: dequantize_int16(dst, scale); break;
+            case StorageType::FP16:  dequantize_fp16(dst); break;
+        }
+    }
+
+private:
+    //------------------------------------------------------------------
+    // 1-bit binary
+    //------------------------------------------------------------------
+    void quantize_bin1(const float* src) {
+        std::fill(data.begin(), data.end(), 0);
+        for (size_t i = 0; i < dim; ++i)
+            if (src[i] > 0) data[i >> 3] |= uint8_t(1u << (i & 7));
+    }
+
+    void dequantize_bin1(float* dst) const {
+        for (size_t i = 0; i < dim; ++i)
+            dst[i] = (data[i >> 3] >> (i & 7)) & 1 ? 1.f : -1.f;
+    }
+
+    //------------------------------------------------------------------
+    // 2-bit
+    //------------------------------------------------------------------
+    void quantize_int2(const float* src, float scale) {
+        size_t idx = 0;
+        for (size_t i = 0; i < dim; i += 4) {
+            uint8_t out = 0;
+            for (int j = 0; j < 4 && i + j < dim; ++j) {
+                int q = int(std::round(src[i + j] * scale));
+                q = std::clamp(q, 0, 3);
+                out |= (q & 0x3) << (2 * j);
+            }
+            data[idx++] = out;
+        }
+    }
+
+    void dequantize_int2(float* dst, float scale) const {
+        size_t idx = 0;
+        for (size_t i = 0; i < dim; i += 4) {
+            uint8_t in = data[idx++];
+            for (int j = 0; j < 4 && i + j < dim; ++j)
+                dst[i + j] = ((in >> (2 * j)) & 0x3) / scale;
+        }
+    }
+
+    //------------------------------------------------------------------
+    // 4-bit
+    //------------------------------------------------------------------
+    void quantize_int4(const float* src, float scale) {
+        size_t idx = 0;
+        for (size_t i = 0; i < dim; i += 2) {
+            int q0 = std::clamp(int(std::round(src[i] * scale)), 0, 15);
+            int q1 = (i + 1 < dim) ? std::clamp(int(std::round(src[i + 1] * scale)), 0, 15) : 0;
+            data[idx++] = uint8_t((q1 << 4) | (q0 & 0x0F));
+        }
+    }
+
+    void dequantize_int4(float* dst, float scale) const {
+        size_t idx = 0;
+        for (size_t i = 0; i < dim; i += 2) {
+            uint8_t in = data[idx++];
+            dst[i] = (in & 0x0F) / scale;
+            if (i + 1 < dim) dst[i + 1] = (in >> 4) / scale;
+        }
+    }
+
+    //------------------------------------------------------------------
+    // 8-bit
+    //------------------------------------------------------------------
+    void quantize_int8(const float* src, float scale) {
+        for (size_t i = 0; i < dim; ++i) {
+            int q = std::clamp(int(std::round(src[i] * scale)), -128, 127);
+            data[i] = uint8_t(q);
+        }
+    }
+
+    void dequantize_int8(float* dst, float scale) const {
+        for (size_t i = 0; i < dim; ++i)
+            dst[i] = int8_t(data[i]) / scale;
+    }
+
+    //------------------------------------------------------------------
+    // 16-bit integer
+    //------------------------------------------------------------------
+    void quantize_int16(const float* src, float scale) {
+        auto* out16 = reinterpret_cast<uint16_t*>(data.data());
+        for (size_t i = 0; i < dim; ++i) {
+            int q = std::clamp(int(std::round(src[i] * scale)), -32768, 32767);
+            out16[i] = static_cast<uint16_t>(q & 0xFFFF);
+        }
+    }
+
+    void dequantize_int16(float* dst, float scale) const {
+        const uint16_t* in16 = reinterpret_cast<const uint16_t*>(data.data());
+        for (size_t i = 0; i < dim; ++i)
+            dst[i] = int16_t(in16[i]) / scale;
+    }
+
+    //------------------------------------------------------------------
+    // 16-bit float (half)
+    //------------------------------------------------------------------
+    static inline uint16_t float_to_half_bits(float f) {
+        uint32_t x;
+        std::memcpy(&x, &f, sizeof(x));
+        uint16_t sign = (x >> 31) & 0x1;
+        int32_t exp = ((x >> 23) & 0xFF) - 127 + 15;
+        uint32_t mant = x & 0x7FFFFF;
+        if (exp <= 0) return sign << 15; // underflow -> 0
+        if (exp >= 31) return (sign << 15) | 0x7C00; // overflow -> inf
+        return (sign << 15) | (exp << 10) | (mant >> 13);
+    }
+
+    static inline float half_bits_to_float(uint16_t h) {
+        uint32_t sign = (h >> 15) & 0x1;
+        uint32_t exp = (h >> 10) & 0x1F;
+        uint32_t mant = h & 0x3FF;
+        uint32_t f;
+        if (exp == 0)
+            f = mant << 13;
+        else if (exp == 31)
+            f = 0x7F800000 | (mant << 13);
+        else
+            f = ((exp - 15 + 127) << 23) | (mant << 13);
+        f |= sign << 31;
+        float result;
+        std::memcpy(&result, &f, sizeof(result));
+        return result;
+    }
+
+    void quantize_fp16(const float* src) {
+        auto* out16 = reinterpret_cast<uint16_t*>(data.data());
+#if defined(HAS_AVX512FP16)
+        for (size_t i = 0; i < dim; ++i)
+            out16[i] = _cvtss_sh(src[i], 0);
+#elif defined(HAS_NEON_FP16)
+        for (size_t i = 0; i < dim; ++i)
+            out16[i] = vcvt_f16_f32(vdup_n_f32(src[i]))[0];
+#else
+        for (size_t i = 0; i < dim; ++i)
+            out16[i] = float_to_half_bits(src[i]);
+#endif
+    }
+
+    void dequantize_fp16(float* dst) const {
+        const uint16_t* in16 = reinterpret_cast<const uint16_t*>(data.data());
+#if defined(HAS_AVX512FP16)
+        for (size_t i = 0; i < dim; ++i)
+            dst[i] = _cvtsh_ss(in16[i]);
+#elif defined(HAS_NEON_FP16)
+        for (size_t i = 0; i < dim; ++i)
+            dst[i] = vcvt_f32_f16(vdup_n_f16(in16[i]))[0];
+#else
+        for (size_t i = 0; i < dim; ++i)
+            dst[i] = half_bits_to_float(in16[i]);
+#endif
+    }
+};
+
+} // namespace hnswlib
+

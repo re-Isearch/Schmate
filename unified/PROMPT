@@ -1,0 +1,146 @@
+Looks like an error in the benchmark code where it got the
+order of the results backwards!
+
+Modified 
+
+       // Search
+        auto pq = index->searchKnn(query_code.data(), k);
+        
+        results[q].resize(pq.size());
+#if 1
+        // Fill reverse to preserve neartest-firt ordering
+        for (int i = pq.size() - 1; i >= 0; --i) {
+            results[q][i] = pq.top().second;
+            total_dist += pq.top().first;
+            dist_count++;
+            pq.pop(); 
+        }   
+        
+    
+#else
+        for (int i = pq.size() - 1; i >= 0; --i) {
+            results[q][pq.size() - 1 - i] = pq.top().second;
+            total_dist += pq.top().first;
+            dist_count++;
+            pq.pop();
+        }
+#endif  
+
+
+also in the L2 Baseline test:
+
+       vector<vector<size_t>> results(n_queries);
+        for (size_t q = 0; q < n_queries; ++q) {
+            auto pq = index.searchKnn(queries[q].data(), k);
+            results[q].resize(pq.size());
+            for (int i = pq.size() - 1; i >= 0; --i) {
+                results[q][i] = pq.top().second; // Changed to i
+                pq.pop();
+            }
+        }
+
+then got using v31 of the space quantization code:
+=== Quantization Benchmark ===
+Dimension: 128
+Data points: 50000
+Queries: 1000
+k: 10
+
+Generating data...
+  (First vector norm: 1, 10 clusters)
+  Queries sampled from data
+
+Testing BASELINE-L2 (unquantized)
+..... done!
+  Build time: 8394.87 ms
+  Max level: 3
+  Recall: 0.9953
+
+Testing INT8-STANDARD
+  Building index for INT8-STANDARD...  [Scale debug: dim0 range=[-0.221278,0.0923366], scale=0.00122986]  [INT8 codes first 10: min=15 max=220 avg=120.3]
+  Computing ground truth with quantized distances... [dist range: 0.0119014-2.49463, avg: 1.83016, ratio: 209.607] done! [GT dist example: 0]..... done!
+  Index size: 50000 elements
+  Max level: 3
+  Querying... done! (avg dist: 0.011778)
+
+Testing INT8-CENTROID
+  Building index for INT8-CENTROID...  [INT8 codes first 10: min=13 max=201 avg=113.1]
+  Computing ground truth with quantized distances... [dist range: 0.0118035-2.49143, avg: 1.83022, ratio: 211.076] done! [GT dist example: 0]..... done!
+  Index size: 50000 elements
+  Max level: 3
+  Querying... done! (avg dist: 0.0117822)
+
+Testing INT4-STANDARD
+  Building index for INT4-STANDARD...  [Scale debug: dim0 range=[-0.221278,0.0923366], scale=0.0209076]
+  Computing ground truth with quantized distances... [dist range: 0.0191315-2.52818, avg: 1.80576, ratio: 132.147] done! [GT dist example: 0]..... done!
+  Index size: 50000 elements
+  Max level: 3
+  Querying... done! (avg dist: 0.0191224)
+
+Testing BIN1-STANDARD
+  Building index for BIN1-STANDARD...
+  Computing ground truth with quantized distances... [dist range: 0.0078125-0.671875, avg: 0.502849, ratio: 86] done! [GT dist example: 0]..... done!
+  Index size: 50000 elements
+  Max level: 3
+  Querying... done! (avg dist: 0.0159828)
+
+=== Results ===
+
+Mode                  Build (ms)  Query (ms)    Recall Bytes/Vec Memory (KB)
+----------------------------------------------------------------------------
+INT8-STANDARD            16840.6      315.37    0.9948       128        6250
+INT8-CENTROID            16880.0      315.48    0.9960       128        6250
+INT4-STANDARD            21855.3      418.55    0.9983        64        3125
+BIN1-STANDARD             3303.8       50.02    0.7001        16         781
+
+=== Analysis ===
+Best recall: INT4-STANDARD (0.9983)
+Fastest query: BIN1-STANDARD (50.02 ms)
+Smallest memory: BIN1-STANDARD (781 KB)
+
+This look, I think, good.  
+
+Changing the one line in v15 benchmark and running:
+
+=== Results ===
+
+Mode                  Build (ms)  Query (ms)    Recall Bytes/Vec Memory (KB)
+----------------------------------------------------------------------------
+BIN1-STANDARD             6510.6       38.15    0.6087        16         781
+BIN1-BETTER               5851.1       15.70    0.3770        16         781
+BIN1-CENTROID             5797.4       32.31    0.4824        16         781
+INT158-STANDARD          29093.9      305.73    0.7592        32        1562
+INT158-CENTROID          20680.0      144.88    0.7318        32        1562
+INT4-STANDARD            35112.7      350.46    0.7815        64        3125
+INT4-CENTROID            34608.4      348.75    0.8197        64        3125
+INT8-STANDARD            22731.7      209.81    0.7971       128        6250
+INT8-CENTROID            22800.9      207.08    0.8829       128        6250
+
+=== Analysis ===
+Best recall: INT8-CENTROID (0.8829)
+Fastest query: BIN1-BETTER (15.70 ms)
+Smallest memory: BIN1-STANDARD (781 KB)
+
+
+
+Using h.31
+
+== Results ===
+
+Mode                  Build (ms)  Query (ms)    Recall Bytes/Vec Memory (KB)
+----------------------------------------------------------------------------
+BIN1-STANDARD             6786.6       39.00    0.6087        16         781
+BIN1-BETTER               6301.8       16.38    0.3770        16         781
+BIN1-CENTROID             5873.9       33.25    0.4824        16         781
+INT158-STANDARD          29214.8      344.53    0.7592        32        1562
+INT158-CENTROID          20439.9      169.07    0.7318        32        1562
+INT4-STANDARD            32577.0      338.26    0.8477        64        3125
+INT4-CENTROID            31822.6      326.84    0.7722        64        3125
+INT8-STANDARD            25431.9      246.53    0.7603       128        6250
+INT8-CENTROID            25396.7      245.40    0.7737       128        6250
+
+=== Analysis ===
+Best recall: INT4-STANDARD (0.8477)
+Fastest query: BIN1-BETTER (16.38 ms)
+Smallest memory: BIN1-STANDARD (781 KB)
+h

@@ -1,0 +1,11 @@
+// Inside append()
+auto vector = embedder.encode(sentence);
+if (cfg.mrl_enabled) {
+    // Pass the vector and a dimension hint (e.g., 64) 
+    // to the custom distance hook in HNSW
+    hnsw->addPoint(vector.data(), lbl, mrl_64_hint); 
+} else {
+    hnsw->addPoint(vector.data(), lbl);
+}
+
+

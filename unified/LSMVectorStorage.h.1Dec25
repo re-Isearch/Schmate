@@ -1,0 +1,691 @@
+// LSMVectorStorage.h -- Versioned compact-file support (vectors-only files)
+// Updated to support versioned .vectors.<ver> files, unmapping/remapping on compaction,
+// discovery of existing versions, and safe retention of unified index (base file).
+
+#pragma once
+
+#include "hnswlib/hnswlib.h"
+#include <fcntl.h>
+#include <cstring>
+#include <numeric>
+#include <cmath>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <filesystem>
+#include <cstdio>
+
+/*
+Notes, assumptions and behavior details
+
+Naming & ordering — versions use zero-padded 5-digit numbers (00001). That keeps lexicographic order == version order. You can increase padding if you expect >99,999 compactions.
+
+Discovery on load — discover_compact_files() scans the directory for files named base_filename_ + ".vectors." + <digits>. If any exist we prefer the latest (last in sorted list) and map it. If none exist we keep the unified-file mapping behavior.
+
+Atomic swap — renaming tmp → final name is used to make the compact step atomic. We then remove() the previous compact file if present.
+
+Unmapping before rename — we cleanup_mmap() before renaming and remapping. That prevents keeping stale mappings and lets us delete the old file safely.
+
+Fallback — if mapping the new compact file fails, the function returns false. We intentionally do not delete the unified index file.
+
+Windows — I kept your existing #ifdef _WIN32 placeholders for Windows-specific mapping; fill in setup_mmap_windows() as needed for that platform.
+
+Performance — compaction still builds the entire vector set in memory for writing. If your dataset is huge you might want a streaming compaction algorithm to avoid a full in-memory copy.
+
+*/
+
+
+namespace hnswlib {
+
+enum class VectorStorageMode {
+    DISABLED,
+    IN_MEMORY,
+    MEMORY_MAPPED
+};
+
+struct VectorStorageConfig {
+    VectorStorageMode mode = VectorStorageMode::DISABLED;
+    size_t flush_threshold = 10000;
+    size_t compact_threshold = 20;
+    bool auto_compact_on_save = true;
+};
+
+class LSMVectorStorage {
+private:
+    VectorStorageConfig config_;
+    VectorStorageMode &storage_mode_ = config_.mode;
+    size_t &flush_threshold_         = config_.flush_threshold ;
+    size_t &compact_threshold_       = config_.compact_threshold;
+
+    std::string base_filename_;
+    size_t dim_ = 0;
+
+    // Main mapping info (points to either unified-file vector-region or a compact vectors-only file)
+    void* main_mmap_ptr_ = nullptr;
+    size_t main_mmap_size_ = 0;
+    int main_mmap_fd_ = -1;
+    size_t main_vectors_offset_ = 0; // offset inside base_filename_ where vectors start (or 0 for vectors-only file)
+    std::unordered_map<labeltype, size_t> main_offsets_; // offset relative to main_vectors_offset_ (i * entry_size)
+
+    // Delta files + caches
+    std::vector<std::string> delta_files_;
+    std::vector<std::unordered_map<labeltype, std::vector<float>>> delta_caches_;
+    std::vector<std::unordered_set<labeltype>> delta_label_sets_;
+    std::unordered_map<labeltype, std::vector<float>> current_delta_;
+    size_t additions_since_flush_ = 0;
+    size_t saves_since_compact_ = 0;
+
+    // Versioned compact files management
+    std::vector<std::string> compact_files_;     // list of available compact files (sorted ascending)
+    std::string current_vectors_file_;           // currently mmapped vectors file (if any)
+    uint64_t compact_version_counter_ = 0;       // next version to use for new compact file
+
+public:
+    LSMVectorStorage() {}
+    LSMVectorStorage(size_t dim, size_t flush_threshold = 10000) {
+        dim_ = dim;
+        flush_threshold_ = flush_threshold;
+    }
+
+    ~LSMVectorStorage() {
+        cleanup();
+    }
+
+    void set_dim(size_t dim) { dim_ = dim; }
+    void set_storage_mode(VectorStorageMode mode) { storage_mode_ = mode; }
+    void set_flush_threshold(size_t flush_threshold) { flush_threshold_ = flush_threshold; }
+    void set_basename(const std::string& path) { base_filename_ = path; }
+
+    size_t bytes_per_vector () const {
+      if (storage_mode_ == VectorStorageMode::IN_MEMORY) return dim_ * sizeof(float);
+      else if (storage_mode_ == VectorStorageMode::DISABLED) return 0;
+      else return 0;
+    }
+
+    // ------------------------
+    // Loading entrypoints
+    // ------------------------
+    // Load vectors when vectors are embedded in the combined unified index file
+    bool load_vectors(const std::string& filename, std::ifstream& ifs,
+                      size_t num_vectors, VectorStorageMode mode, size_t flush_threshold = 0) {
+        base_filename_   = filename;
+        storage_mode_    = mode;
+        if (flush_threshold) flush_threshold_ = flush_threshold;
+        return load_vectors(ifs, num_vectors);
+    }
+
+    bool load_vectors(const std::string& filename, std::ifstream& ifs,
+                      VectorStorageMode mode = VectorStorageMode::MEMORY_MAPPED, size_t flush_threshold = 0) {
+        base_filename_   = filename;
+        storage_mode_    = mode;
+        if (flush_threshold) flush_threshold_ = flush_threshold;
+
+        size_t num_vectors;
+        ifs.read(reinterpret_cast<char*>(&num_vectors), sizeof(size_t));
+        return load_vectors(ifs, num_vectors);
+    }
+
+    // Called when we have an ifstream positioned at the first vector entry (after header)
+    bool load_vectors(std::ifstream& ifs, size_t num_vectors) {
+        if (base_filename_.empty()) {
+            HNSWERR << "Can't load vectors: No filename set!\n";
+            return false;
+        }
+        if (!ifs.good()) return false;
+
+        if (storage_mode_ == VectorStorageMode::DISABLED) {
+            for (size_t i = 0; i < num_vectors; i++) {
+                ifs.seekg(sizeof(labeltype) + dim_ * sizeof(float), std::ios::cur);
+            }
+            return true;
+        }
+
+        if (storage_mode_ == VectorStorageMode::IN_MEMORY) {
+            return load_in_memory(ifs, num_vectors);
+        }
+
+        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED) {
+            // Case 1: We might already have compacted vector files: prefer them.
+            discover_compact_files(); // populate compact_files_ & compact_version_counter_
+            if (!compact_files_.empty()) {
+                // Load the latest compact file
+                std::string latest = compact_files_.back();
+                return load_vectors_from_vectors_file(latest);
+            }
+
+            // Else, load vectors in-place from unified file region (ifs is positioned at vectors)
+            return load_with_mmap(ifs, num_vectors);
+        }
+
+        return false;
+    }
+
+    // Load when the vectors are at a known offset in the combined file
+    bool load_vectors_at_offset(const std::string& filename,
+                                 size_t file_offset,
+                                 size_t num_vectors,
+                                 VectorStorageMode mode,
+                                 size_t flush_threshold) {
+        storage_mode_ = mode;
+        base_filename_ = filename;
+        flush_threshold_ = flush_threshold;
+        main_vectors_offset_ = file_offset;
+
+        if (mode == VectorStorageMode::DISABLED) {
+            return true;
+        }
+
+        if (mode == VectorStorageMode::IN_MEMORY) {
+            std::ifstream ifs(filename, std::ios::binary);
+            ifs.seekg(file_offset);
+            return load_in_memory(ifs, num_vectors);
+        }
+
+        if (mode == VectorStorageMode::MEMORY_MAPPED) {
+            // Discover compact files first: if present prefer them
+            discover_compact_files();
+            if (!compact_files_.empty()) {
+                return load_vectors_from_vectors_file(compact_files_.back());
+            }
+
+            // Otherwise, map the vectors in the unified file region
+            size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
+            main_mmap_size_ = num_vectors * entry_size;
+
+            std::ifstream ifs(filename, std::ios::binary);
+            ifs.seekg(file_offset);
+
+            main_offsets_.clear();
+            for (size_t i = 0; i < num_vectors; i++) {
+                labeltype label;
+                ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+                main_offsets_[label] = i * entry_size;
+                ifs.seekg(dim_ * sizeof(float), std::ios::cur);
+                if (!ifs.good()) return false;
+            }
+
+            #ifdef _WIN32
+            return setup_mmap_windows();
+            #else
+            return setup_mmap_unix();
+            #endif
+        }
+
+        return false;
+    }
+
+private:
+    // ------------------------
+    // Discover and naming helpers
+    // ------------------------
+    static std::string format_version(uint64_t v) {
+        std::ostringstream ss;
+        ss << std::setw(5) << std::setfill('0') << v;
+        return ss.str();
+    }
+
+    // Make a compact filename for a given version
+    std::string make_compact_filename(uint64_t ver) const {
+        return base_filename_ + ".vectors." + format_version(ver);
+    }
+
+    // Make temporary filename for building
+    std::string make_temp_compact_filename(uint64_t ver) const {
+        return make_compact_filename(ver) + ".tmp";
+    }
+
+    // Scan directory for existing compact files and populate compact_files_
+    void discover_compact_files() {
+        compact_files_.clear();
+
+        try {
+            std::filesystem::path p(base_filename_);
+            auto dir = p.parent_path();
+            if (dir.empty()) dir = ".";
+
+            std::string base_stem = p.string() + ".vectors.";
+
+            for (auto &entry : std::filesystem::directory_iterator(dir)) {
+                if (!entry.is_regular_file()) continue;
+                std::string fname = entry.path().string();
+
+                // We expect names like base_filename_.vectors.00001
+                if (fname.rfind(base_stem, 0) == 0) {
+                    // Ensure it doesn't have .tmp suffix
+                    if (fname.size() >= 4 && fname.substr(fname.size()-4) == ".tmp") continue;
+                    // Accept it
+                    compact_files_.push_back(fname);
+                }
+            }
+        } catch (...) {
+            // ignore filesystem errors and leave compact_files_ empty
+        }
+
+        // Sort to ensure ascending versions
+        std::sort(compact_files_.begin(), compact_files_.end());
+
+        // Set version counter to the next available version
+        if (!compact_files_.empty()) {
+            // parse last filename's version
+            const std::string &last = compact_files_.back();
+            // extract trailing digits (after ".vectors.")
+            auto pos = last.rfind(".vectors.");
+            if (pos != std::string::npos) {
+                std::string verstr = last.substr(pos + 9); // after ".vectors."
+                // try to parse leftmost digits
+                uint64_t parsed = 0;
+                try {
+                    parsed = std::stoull(verstr);
+                } catch (...) { parsed = 0; }
+                compact_version_counter_ = parsed + 1;
+            } else {
+                compact_version_counter_ = 1;
+            }
+        } else {
+            compact_version_counter_ = 1;
+        }
+    }
+
+    // ------------------------
+    // Mmap setup / cleanup
+    // ------------------------
+    #ifndef _WIN32
+    bool setup_mmap_unix() {
+        // open the file (base_filename_)
+        main_mmap_fd_ = open(base_filename_.c_str(), O_RDONLY);
+        if (main_mmap_fd_ == -1) return false;
+
+        size_t page_size = sysconf(_SC_PAGE_SIZE);
+        size_t aligned_offset = (main_vectors_offset_ / page_size) * page_size;
+        size_t offset_adjustment = main_vectors_offset_ - aligned_offset;
+        size_t map_size = main_mmap_size_ + offset_adjustment;
+
+        void* map_base = mmap(nullptr, map_size, PROT_READ, MAP_PRIVATE,
+                             main_mmap_fd_, aligned_offset);
+        if (map_base == MAP_FAILED) {
+            close(main_mmap_fd_);
+            main_mmap_fd_ = -1;
+            return false;
+        }
+
+        main_mmap_ptr_ = static_cast<char*>(map_base) + offset_adjustment;
+        madvise(map_base, map_size, MADV_RANDOM);
+
+        return true;
+    }
+    #endif
+
+    #ifdef _WIN32
+    bool setup_mmap_windows() {
+        // Windows mapping not fully provided here; keep previous approach
+        return true;
+    }
+    #endif
+
+    void cleanup_mmap() {
+        #ifndef _WIN32
+        if (main_mmap_ptr_ != nullptr) {
+            size_t page_size = sysconf(_SC_PAGE_SIZE);
+            size_t aligned_offset = (main_vectors_offset_ / page_size) * page_size;
+            size_t offset_adjustment = main_vectors_offset_ - aligned_offset;
+            void* map_base = static_cast<char*>(main_mmap_ptr_) - offset_adjustment;
+            munmap(map_base, main_mmap_size_ + offset_adjustment);
+            main_mmap_ptr_ = nullptr;
+        }
+        if (main_mmap_fd_ != -1) {
+            close(main_mmap_fd_);
+            main_mmap_fd_ = -1;
+        }
+        #else
+        if (main_mmap_ptr_ != nullptr) {
+            UnmapViewOfFile(main_mmap_ptr_);
+            main_mmap_ptr_ = nullptr;
+        }
+        #endif
+    }
+
+    // ------------------------
+    // Loading a vectors-only file (compacted)
+    // ------------------------
+    bool load_vectors_from_vectors_file(const std::string& vectors_file) {
+        // The vectors-only file format is:
+        // [size_t num_vectors][ labeltype + float*dim ] * num_vectors
+        std::ifstream ifs(vectors_file, std::ios::binary);
+        if (!ifs.good()) return false;
+
+        size_t num_vectors;
+        ifs.read(reinterpret_cast<char*>(&num_vectors), sizeof(size_t));
+        if (!ifs.good()) return false;
+
+        // Build index: offsets are measured relative to the position after header
+        main_offsets_.clear();
+        size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
+
+        // We'll set base_filename_ temporarily to vectors_file for mmap open
+        std::string old_base = base_filename_;
+        base_filename_ = vectors_file;
+
+        // Position in file just after header
+        main_vectors_offset_ = ifs.tellg();
+
+        for (size_t i = 0; i < num_vectors; ++i) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            main_offsets_[label] = i * entry_size;
+            ifs.seekg(dim_ * sizeof(float), std::ios::cur);
+            if (!ifs.good()) {
+                // restore base_filename_ and fail
+                base_filename_ = old_base;
+                return false;
+            }
+        }
+
+        main_mmap_size_ = num_vectors * entry_size;
+
+        // Unmap any prior mapping just in case
+        cleanup_mmap();
+
+        // Setup mmap on this vectors_file (base_filename_ now points to it)
+        #ifdef _WIN32
+        bool ok = setup_mmap_windows();
+        #else
+        bool ok = setup_mmap_unix();
+        #endif
+
+        // If we succeeded, record current_vectors_file_
+        if (ok) {
+            current_vectors_file_ = vectors_file;
+            // Make sure compact_files_ includes it (avoid duplicates)
+            if (std::find(compact_files_.begin(), compact_files_.end(), vectors_file) == compact_files_.end()) {
+                compact_files_.push_back(vectors_file);
+                std::sort(compact_files_.begin(), compact_files_.end());
+            }
+        } else {
+            // restore base_filename_
+            base_filename_ = old_base;
+        }
+
+        return ok;
+    }
+
+    // ------------------------
+    // Loading with mmap from unified file region (ifs is at vector region)
+    // ------------------------
+    bool load_with_mmap(std::ifstream& ifs, size_t num_vectors) {
+        main_vectors_offset_ = ifs.tellg();
+
+        size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
+        main_offsets_.clear();
+
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            main_offsets_[label] = i * entry_size;
+            ifs.seekg(dim_ * sizeof(float), std::ios::cur);
+            if (!ifs.good()) return false;
+        }
+
+        main_mmap_size_ = num_vectors * entry_size;
+
+        // Unmap any prior mapping and set base_filename_ to unified file (unchanged)
+        cleanup_mmap();
+
+        #ifdef _WIN32
+        return setup_mmap_windows();
+        #else
+        return setup_mmap_unix();
+        #endif
+    }
+
+    // ------------------------
+    // In-memory loader
+    // ------------------------
+    bool load_in_memory(std::ifstream& ifs, size_t num_vectors) {
+        current_delta_.clear();
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            std::vector<float> vec(dim_);
+            ifs.read(reinterpret_cast<char*>(vec.data()), dim_ * sizeof(float));
+            if (!ifs.good()) return false;
+            current_delta_[label] = std::move(vec);
+        }
+        return true;
+    }
+
+public:
+    // ------------------------
+    // Basic APIs: add/flush/get
+    // ------------------------
+    void addPoint(labeltype label, const float* data) {
+        if (storage_mode_ == VectorStorageMode::DISABLED) return;
+
+        current_delta_[label] = std::vector<float>(data, data + dim_);
+        additions_since_flush_++;
+
+        if (additions_since_flush_ >= flush_threshold_) {
+            flush_delta();
+        }
+    }
+
+    bool flush_delta() {
+        if (current_delta_.empty()) return true;
+
+        std::string delta_file = base_filename_ + ".delta." + std::to_string(delta_files_.size());
+        std::ofstream ofs(delta_file, std::ios::binary);
+        if (!ofs) return false;
+
+        size_t num_vectors = current_delta_.size();
+        ofs.write(reinterpret_cast<const char*>(&num_vectors), sizeof(size_t));
+
+        for (const auto& [label, vec] : current_delta_) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+
+        if (!ofs.good()) return false;
+
+        delta_files_.push_back(delta_file);
+        delta_caches_.push_back(std::move(current_delta_));
+
+        std::unordered_set<labeltype> label_set;
+        for (const auto& [label, vec] : delta_caches_.back()) label_set.insert(label);
+        delta_label_sets_.push_back(std::move(label_set));
+
+        current_delta_.clear();
+        additions_since_flush_ = 0;
+        return true;
+    }
+
+    const float* get_vector(labeltype label) const {
+        auto it = current_delta_.find(label);
+        if (it != current_delta_.end()) return it->second.data();
+
+        for (size_t i = delta_caches_.size(); i > 0; --i) {
+            size_t idx = i - 1;
+            if (delta_label_sets_[idx].find(label) == delta_label_sets_[idx].end()) continue;
+            auto dit = delta_caches_[idx].find(label);
+            if (dit != delta_caches_[idx].end()) return dit->second.data();
+        }
+
+        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED && main_mmap_ptr_) {
+            auto mit = main_offsets_.find(label);
+            if (mit != main_offsets_.end()) {
+                size_t offset = mit->second + sizeof(labeltype);
+                return reinterpret_cast<const float*>(
+                    static_cast<char*>(main_mmap_ptr_) + offset
+                );
+            }
+        }
+
+        return nullptr;
+    }
+
+public:
+    // ------------------------
+    // Save + consolidation
+    // ------------------------
+    bool save_vectors_to_stream(std::ofstream& ofs) {
+        auto all_vectors = get_all_vectors_for_save();
+
+        size_t num_vectors = all_vectors.size();
+        ofs.write(reinterpret_cast<const char*>(&num_vectors), sizeof(size_t));
+
+        for (const auto& [label, vec] : all_vectors) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+
+        return ofs.good();
+    }
+
+    std::vector<std::pair<labeltype, std::vector<float>>> get_all_vectors_for_save() {
+        if (!current_delta_.empty()) flush_delta();
+
+        std::unordered_map<labeltype, std::vector<float>> all_vectors;
+
+        if (main_mmap_ptr_) {
+            for (const auto& [label, offset] : main_offsets_) {
+                const float* vec_ptr = reinterpret_cast<const float*>(
+                    static_cast<char*>(main_mmap_ptr_) + offset + sizeof(labeltype)
+                );
+                all_vectors[label] = std::vector<float>(vec_ptr, vec_ptr + dim_);
+            }
+        }
+
+        for (const auto& delta_cache : delta_caches_) {
+            for (const auto& [label, vec] : delta_cache) {
+                all_vectors[label] = vec;
+            }
+        }
+
+        std::vector<std::pair<labeltype, std::vector<float>>> result;
+        result.reserve(all_vectors.size());
+        for (auto& [label, vec] : all_vectors) result.emplace_back(label, std::move(vec));
+
+        cleanup_deltas();
+        return result;
+    }
+
+private:
+    void cleanup_deltas() {
+        for (const auto& delta_file : delta_files_) std::remove(delta_file.c_str());
+        delta_files_.clear();
+        delta_caches_.clear();
+        delta_label_sets_.clear();
+    }
+
+public:
+    // ------------------------
+    // Compaction: versioned .vectors.<ver> files
+    // ------------------------
+    bool compact() {
+        // nothing to do?
+        if (delta_files_.empty() && current_delta_.empty()) {
+            return true;
+        }
+
+        // 1) Consolidate all vectors into memory
+        auto all_vectors = get_all_vectors_for_save();
+
+        // 2) Prepare versioned names
+        discover_compact_files(); // refresh version counter
+        uint64_t version = compact_version_counter_++;
+        std::string tmpfile = make_temp_compact_filename(version);
+        std::string newfile = make_compact_filename(version);
+
+        // 3) Write temporary vectors-only file
+        {
+            std::ofstream ofs(tmpfile, std::ios::binary);
+            if (!ofs) return false;
+
+            size_t num_vectors = all_vectors.size();
+            ofs.write(reinterpret_cast<const char*>(&num_vectors), sizeof(size_t));
+
+            for (const auto& [label, vec] : all_vectors) {
+                ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+                ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+            }
+            ofs.close();
+        }
+
+        // 4) Unmap previous mapping (so readers aren't pointing to old file)
+        cleanup_mmap();
+        main_offsets_.clear();
+
+        // 5) Rename tmp -> new version (atomic on most filesystems)
+        std::remove(newfile.c_str()); // remove if exists (safe)
+        if (std::rename(tmpfile.c_str(), newfile.c_str()) != 0) {
+            // rename failed - try to clean tmp and return failure
+            std::remove(tmpfile.c_str());
+            return false;
+        }
+
+        // 6) Update compact_files_ list & track current_vectors_file_
+        //    Also remove the previous compact file from disk (we keep only latest to save space)
+        std::string prev = current_vectors_file_;
+        current_vectors_file_ = newfile;
+        if (std::find(compact_files_.begin(), compact_files_.end(), newfile) == compact_files_.end()) {
+            compact_files_.push_back(newfile);
+            std::sort(compact_files_.begin(), compact_files_.end());
+        }
+
+        // Remove previous compact file (if exists and differs from base_filename_)
+        if (!prev.empty() && prev != current_vectors_file_) {
+            std::remove(prev.c_str());
+            // erase from compact_files_
+            compact_files_.erase(std::remove(compact_files_.begin(), compact_files_.end(), prev),
+                                 compact_files_.end());
+        }
+
+        // 7) mmap the new compact file (and rebuild offsets inside load function)
+        if (!load_vectors_from_vectors_file(current_vectors_file_)) {
+            // If mmap-ing new file fails, try to rollback: leave no mapping but keep base_filename_ intact
+            return false;
+        }
+
+        return true;
+    }
+
+    // ------------------------
+    // Stats + helpers
+    // ------------------------
+    struct Stats {
+        size_t main_vectors;
+        size_t delta_files;
+        size_t pending_additions;
+        size_t total_vectors;
+    };
+
+    Stats get_stats() const {
+        Stats stats;
+        stats.main_vectors = main_offsets_.size();
+        stats.delta_files = delta_files_.size();
+        stats.pending_additions = current_delta_.size();
+        stats.total_vectors = stats.main_vectors + stats.pending_additions;
+        return stats;
+    }
+
+    bool is_rescoring_enabled() const {
+        return storage_mode_ != VectorStorageMode::DISABLED;
+    }
+
+private:
+    void cleanup() {
+        flush_delta();
+        cleanup_mmap();
+
+        // clear in-memory caches
+        delta_caches_.clear();
+        delta_label_sets_.clear();
+        compact_files_.clear();
+    }
+};
+
+} // namespace hnswlib
+

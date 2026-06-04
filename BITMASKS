@@ -1,0 +1,90 @@
+
+
+# CoreQuarry Architectural Blueprint: Unified Index Label Bitmasking
+
+## 1. Executive Summary & Design Pivot
+
+In earlier iterations of CoreQuarry's hybrid knowledge engine, structural mapping designs attempted to compress structural syntax paths (such as hierarchical file nodes, XML brackets, or JSON tree positions) directly into the upper bits of a 64-bit scalar label inside the Hierarchical Navigable Small World (HNSW) vector index. 
+
+This approach has been deprecated due to a fundamental behavioral trait of dense vector spaces: **hierarchical structural taxonomy does not map linearly to multi-dimensional semantic space.** Identical or highly similar prose blocks (e.g., `"Set the context variable to null"`) routinely appear across structurally divergent sections of technical datasets (e.g., getting-started guides, API specifications, and troubleshooting code appendices). Forcing structural taxonomy flags into dense graph identifiers fragments graph traversal routing and yields no index-level optimization.
+
+To construct a hardware-sympathetic engine ready for production workloads, CoreQuarry repurposes the upper bits of the 64-bit scalar space. Instead of tracking *where* an asset lives structurally, **the upper 24 bits are reserved for an in-flight categorical binary bitmask filter.** This leaves a massive 40-bit address space for unique record identifiers—supporting up to 1+ trillion unique vector nodes per index instance while enabling blisteringly fast, single-instruction bitwise pruning directly within the graph traversal loop.
+
+---
+
+## 2. Memory Layout Allocation
+
+By embedding critical categorical metadata directly inside the HNSW scalar label, CoreQuarry completely eliminates pointer chasing, hash-map lookups, and secondary relational tracking table joins during the initial graph traversal phase. Data remains fully localized within the CPU's L1/L2 cache lines during proximity scoring.
+
+
+<PRE>
+64-Bit Unified Scalar Label Layout:
+┌───────────────────────────────────────┬───────────────────────────────────────┐
+│       24-Bit Metadata Bitmask         │        40-Bit Dense Vector ID         │
+│     (Upper Bits: 40 to 63)            │         (Lower Bits: 0 to 39)         │
+├───────────────────────────────────────┼───────────────────────────────────────┤
+│ 00000000 00000000 00000000            │ 00000000 00000000 ... 0000000000000001│
+└───────────────────────────────────────┴───────────────────────────────────────┘
+▲                                       ▲
+│                                       │
+└── Category Flags, Visibility Controls, └── Flat Identifier Map to Lexical Object
+and Linguistic Locales                  Store (~1.09 Trillion Capacity)
+</PRE>
+
+
+---
+
+## 3. High-Performance C++ Implementation Example
+
+Modern vector graph libraries (such as `HNSWLib`) expose a custom filter callback handler that evaluates candidate nodes in-flight during graph traversal. Because our metadata is packed directly into the scalar key itself, our filter callback resolves in a handful of clock cycles via a standard bitwise `AND` operation.
+
+```cpp
+#include <cstdint>
+
+/**
+ * @brief Blisteringly fast, zero-allocation bitmask filter callback for HNSW graph traversal.
+ */
+struct BitmaskFilter {
+    uint64_t target_mask;      // Which bits we care about for this specific query
+    uint64_t required_flags;    // The expected state of those bits
+
+    /**
+     * @brief Evaluates whether an HNSW node meets metadata query constraints.
+     * @param internal_label The internal index tracking label presented by the graph engine.
+     */
+    inline bool operator()(unsigned int internal_label) const {
+        // Widen the internal label back to our 64-bit architecture layout
+        uint64_t label = static_cast<uint64_t>(internal_label);
+        
+        // Extract metadata flags and evaluate directly against the query requirements
+        return (label & target_mask) == required_flags;
+    }
+};
+
+
+4. Concrete Production Mapping Example
+To demonstrate how users can project real-world metadata onto this architectural pattern, consider an enterprise technical documentation repository processing mixed content across multiple products, version lines, and linguistic localization assets.
+4.1 Bitmask Allocation Grid (24-Bit Space)
+We divide the 24-bit metadata space into distinct, dedicated logical domains:
+Bits 63–62 (2 bits): Content Classification Type (Documentation, Source Code, API Spec, Support Tickets)
+Bits 61–58 (4 bits): Product Ecosystem Scope (Core Engine, Cloud Workspace, Plugins, Mobile App)
+Bits 57–54 (4 bits): Release Version Lifecycle (v1.x, v2.x, v3.x, v4.x, v5.x Development)
+Bits 53–50 (4 bits): Language / Linguistic Locale (English, German, Japanese, French, Spanish)
+Bits 49–48 (2 bits): Security & Visibility Layer (Public, Internal Only, NDA/Partner Restricted)
+Bits 47–40 (8 bits): Reserved for Future Expansion (Feature flags, deprecation tags, etc.)
+4.2 Step-by-Step Execution Scenario
+The Asset Profile
+A documentation passage titled "Optimizing High-Performance CPU Cache Lines" is processed by the ingestion loop. It is written for Product Ecosystem: Core Engine, belongs to the v4.x Release Line, is localized in English, and is marked Internal Only.
+The unique vector node ID assigned by the lexical ingestion database is 0x00A3F102B4 (Decimal: 704,136,372).
+Computing the Bitmask
+According to our schema rules, the metadata states correspond to the following binary values:
+Content Type (Documentation): 00
+Product Scope (Core Engine): 0001
+Version Line (v4.x): 0100
+Locale (English): 0001
+Security (Internal Only): 01
+Reserved: 00000000
+Assembling the complete bitmask yields:
+00 + 0001 + 0100 + 0001 + 01 + 00000000 → 0000 0101 0000 0101 0000 0000 (0x050500)
+The Unified 64-Bit Label Definition
+Shifting this bitmask into the upper 24 bits and merging it with our 40-bit vector ID produces the final scalar integer inserted directly into the HNSW graph index:

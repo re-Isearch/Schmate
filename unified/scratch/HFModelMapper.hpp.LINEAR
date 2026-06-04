@@ -1,0 +1,73 @@
+#pragma once
+
+#ifndef HF_MODEL_MAPPER_H
+#define HF_MODEL_MAPPER_H
+
+#include <string>
+#include <array>
+#include <optional>
+#include <vector>
+#include <fstream>
+
+// Fast key-value store for HuggingFace model mappings
+class HFModelMapper {
+public:
+    static constexpr size_t MAX_ENTRIES = 50;
+    static constexpr size_t KEY_SIZE = 64;
+    static constexpr size_t REPO_SIZE = 256;
+    static constexpr size_t FILENAME_SIZE = 256;
+    static constexpr size_t URL_SIZE = 512;
+    
+    struct Entry {
+        char key[KEY_SIZE];
+        char repo[REPO_SIZE];
+        char filename[FILENAME_SIZE];
+        char downloadURL[URL_SIZE];
+        bool active;
+        
+        Entry() : key{0}, repo{0}, filename{0}, downloadURL{0}, active(false) {}
+    };
+    
+    std::array<Entry, MAX_ENTRIES> entries;  // Public for tool access
+    
+private:
+    size_t count;
+    
+public:
+    HFModelMapper();
+    
+    // Set a mapping with all fields
+    bool set(const std::string& key, const std::string& repo, 
+             const std::string& filename, const std::string& downloadURL = "");
+    
+    // Get individual fields by key
+    std::optional<std::string> getRepo(const std::string& key) const;
+    std::optional<std::string> getFilename(const std::string& key) const;
+    std::optional<std::string> getDownloadURL(const std::string& key) const;
+    
+    // Remove a key
+    bool remove(const std::string& key);
+    
+    // Get all keys
+    std::vector<std::string> keys() const;
+    
+    // Get count of active entries
+    size_t size() const { return count; }
+    
+    // Clear all entries
+    void clear();
+    
+    // Save to binary file
+    bool save(const std::string& filename) const;
+    
+    // Load from binary file
+    bool load(const std::string& filename);
+    
+    // Export to text file (key|repo|filename|downloadURL format)
+    bool exportToText(const std::string& filename) const;
+    
+    // Import from text file
+    bool importFromText(const std::string& filename);
+};
+
+#endif // HF_MODEL_MAPPER_H

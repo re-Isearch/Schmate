@@ -1,0 +1,36 @@
+Copying the index files to another machine
+==========================================
+
+The offset files (*.obn) are memory mapped and sparse-- typically the file contains
+a large hole to the end of file but may contain multiple holes. Because these holes
+would be copied as 0s using normal copy or transfer tools one must only use tools
+where one may specify that sparseness is maintained.
+  
+The most efficient way using standard Unix tools is to use rsync with the --sparse option:
+
+	rsync -avS source_file user@remote:/path/to/destination
+
+The -S (or --sparse) flag tells rsync to handle sparse files efficiently by detecting
+and preserving the holes rather than copying the zero-filled blocks.
+
+Alternatively, you can use tar with sparse file support:
+	tar -cSf 
+
+Create sparse-aware tar archive and transfer
+
+tar -cSf - source_file | ssh user@remote 'tar -xSf - -C /path/to/destination'
+
+The -S flag in tar handles sparse files by not archiving the holes.
+
+Without these flags, the tools would copy all the zeros in the holes as actual
+data, making the transfer much slower and the destination file comume potentiallyi
+much more disk space as a non-sparse file.
+
+If you need to verify the sparseness is preserved, you can check with:
+	ls -lsh filename  # The first column shows actual disk usage vs. apparent size
+
+Example:
+% ls -lsh default.obn 
+7816 -rw-r--r--  1 edz  staff   3.8M Oct  9 12:34 default.obn
+
+This example shows a usage of 7816 blocks versus 3.8 MB if copied as a non-sparse file.

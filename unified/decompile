@@ -1,0 +1,91 @@
+#include "hf_model_mapper_format.hpp"
+#include <fstream>
+#include <iostream>
+#include <string>
+
+using namespace hfmap;
+
+static bool is_pow2(uint32_t v) {
+    return v && !(v & (v - 1));
+}
+
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        std::cerr << "usage: hf_mapper_decompile input.bin output.txt\n";
+        return 1;
+    }
+
+    // Read entire file
+    std::ifstream in(argv[1], std::ios::binary | std::ios::ate);
+    if (!in) {
+        std::cerr << "Failed to open input\n";
+        return 1;
+    }
+
+    const std::streamsize size = in.tellg();
+    in.seekg(0);
+
+    if (size < static_cast<std::streamsize>(sizeof(Header))) {
+        std::cerr << "File too small\n";
+        return 1;
+    }
+
+    std::string buffer(size, '\0');
+    in.read(buffer.data(), size);
+
+    const auto* header = reinterpret_cast<const Header*>(buffer.data());
+
+    // Validate header
+    if (header->magic != kMagic || header->version != kVersion) {
+        std::cerr << "Invalid magic or version\n";
+        return 1;
+    }
+
+    if (!is_pow2(header->table_size)) {
+        std::cerr << "Invalid table size\n";
+        return 1;
+    }
+
+    const size_t needed =
+        sizeof(Header) +
+        size_t(header->table_size) * sizeof(Entry) +
+        size_t(header->pool_size);
+
+    if (needed > static_cast<size_t>(size)) {
+        std::cerr << "Truncated file\n";
+        return 1;
+    }
+
+    const auto* table =
+        reinterpret_cast<const Entry*>(header + 1);
+
+    const char* pool =
+        reinterpret_cast<const char*>(table + header->table_size);
+
+    std::ofstream out(argv[2]);
+    if (!out) {
+        std::cerr << "Failed to open output\n";
+        return 1;
+    }
+
+    // Emit entries in table order (stable, deterministic)
+    for (uint32_t i = 0; i < header->table_size; ++i) {
+        const Entry& e = table[i];
+        if (e.key_offset == kEmpty)
+            continue;
+
+        if (e.key_offset >= header->pool_size ||
+            e.val_offset >= header->pool_size) {
+            std::cerr << "Invalid string offset\n";
+            return 1;
+        }
+
+        const char* key  = pool + e.key_offset;
+        const char* val  = pool + e.val_offset;
+
+        out << key << '=' << val << '\n';
+    }
+
+    return 0;
+}
+

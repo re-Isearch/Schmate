@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant User as 🧑 User / CLI
+    participant Manager as BertIndexManager
+    participant Sharded as ShardedIndex
+    participant Bert as BertIndex
+    participant Disk as 💾 Disk (HNSW + Offsets + Sentences)
+
+    User->>Manager: flush_all()
+    Manager->>Sharded: flush_all()
+    loop For each shard
+        Sharded->>Bert: flush()
+        alt dirty_count > 0
+            Bert->>Disk: save() (HNSW)
+            Bert->>Disk: offsets->flush()
+

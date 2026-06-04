@@ -1,0 +1,12 @@
+bert_load_from_file: mem_per_token 460 KB, mem_per_input 276 MB
+sbert_search: [2026-04-19 19:06:27.226] [INFO] Loaded SBERT GGML model. dim=384
+sbert_search: [2026-04-19 19:06:27.227] [INFO] validate_offsets: 100000/100000 valid entries
+sbert_search: [2026-04-19 19:06:27.227] [INFO] Created initial shard: 0
+sbert_search: [2026-04-19 19:18:25.458] [INFO] validate_offsets: 100000/100000 valid entries
+Iindex [Info]: Adding 912167 words to index ...
+Iindex [Info]: Writing index ...
+sbert_search: [2026-04-19 19:18:59.289] [INFO] [OffsetFile] shrunk from 100000 to 6882 entries (saved 3724680 bytes)
+Iindex [Info]: Database files saved to disk.
+Iindex [Notice]: Added 912167 words (22946 unique) in 37 records in 757 sec. [indexed 36242 words/min, 1 records/min (CPU), 512MB Memory]
+
+

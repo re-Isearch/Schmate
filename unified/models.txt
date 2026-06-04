@@ -1,0 +1,7 @@
+# hf_models.txt
+llama2_7b=TheBloke/Llama-2-7B-GGUF|llama-2-7b.Q4_K_M.gguf
+llama2_13b=TheBloke/Llama-2-13B-GGUF|llama-2-13b.Q4_K_M.gguf
+mistral_7b=TheBloke/Mistral-7B-Instruct-v0.2-GGUF|mistral-7b-instruct-v0.2.Q4_K_M.gguf
+codellama=TheBloke/CodeLlama-13B-GGUF|codellama-13b.Q4_K_M.gguf
+bert-base=bert-base-uncased|tokenizer.json
+gpt2=gpt2|tokenizer.json

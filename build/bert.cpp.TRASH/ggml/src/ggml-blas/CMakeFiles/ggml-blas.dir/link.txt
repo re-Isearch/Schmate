@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -O3 -arch arm64 -dynamiclib -Wl,-headerpad_max_install_names -L/opt/homebrew/opt/llvm/lib -current_version 0.11.1 -o libggml-blas.0.11.1.dylib -install_name @rpath/libggml-blas.0.dylib "CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o"  -Wl,-rpath,/Volumes/Celeritas/CoreQuarry/Schmate/build/bert.cpp/ggml/src ../libggml-base.0.11.1.dylib -framework Accelerate

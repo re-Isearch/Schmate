@@ -1,0 +1,445 @@
+// ============================================================================
+// HNSWlib ARM NEON Support Patch
+// ============================================================================
+// This file shows the modifications needed to add NEON support to HNSWlib
+// Apply these changes to hnswlib/space_l2.h and hnswlib/space_ip.h
+
+#pragma once
+
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
+
+namespace hnswlib {
+
+// ============================================================================
+// L2 Space with NEON Support
+// ============================================================================
+
+#ifdef __ARM_NEON
+
+// NEON-optimized L2 distance (squared Euclidean distance)
+static float L2SqrNEON(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    float *pVect1 = (float *)pVect1v;
+    float *pVect2 = (float *)pVect2v;
+    size_t qty = *((size_t *)qty_ptr);
+    
+    float32x4_t sum_vec = vdupq_n_f32(0.0f);
+    
+    size_t i = 0;
+    // Process 16 floats (4 NEON vectors) at a time
+    for (; i + 16 <= qty; i += 16) {
+        float32x4_t v1_0 = vld1q_f32(pVect1 + i);
+        float32x4_t v2_0 = vld1q_f32(pVect2 + i);
+        float32x4_t diff_0 = vsubq_f32(v1_0, v2_0);
+        sum_vec = vmlaq_f32(sum_vec, diff_0, diff_0);
+        
+        float32x4_t v1_1 = vld1q_f32(pVect1 + i + 4);
+        float32x4_t v2_1 = vld1q_f32(pVect2 + i + 4);
+        float32x4_t diff_1 = vsubq_f32(v1_1, v2_1);
+        sum_vec = vmlaq_f32(sum_vec, diff_1, diff_1);
+        
+        float32x4_t v1_2 = vld1q_f32(pVect1 + i + 8);
+        float32x4_t v2_2 = vld1q_f32(pVect2 + i + 8);
+        float32x4_t diff_2 = vsubq_f32(v1_2, v2_2);
+        sum_vec = vmlaq_f32(sum_vec, diff_2, diff_2);
+        
+        float32x4_t v1_3 = vld1q_f32(pVect1 + i + 12);
+        float32x4_t v2_3 = vld1q_f32(pVect2 + i + 12);
+        float32x4_t diff_3 = vsubq_f32(v1_3, v2_3);
+        sum_vec = vmlaq_f32(sum_vec, diff_3, diff_3);
+    }
+    
+    // Process remaining 4-element blocks
+    for (; i + 4 <= qty; i += 4) {
+        float32x4_t v1 = vld1q_f32(pVect1 + i);
+        float32x4_t v2 = vld1q_f32(pVect2 + i);
+        float32x4_t diff = vsubq_f32(v1, v2);
+        sum_vec = vmlaq_f32(sum_vec, diff, diff);
+    }
+    
+    // Horizontal sum of NEON vector
+    float32x2_t sum_2 = vadd_f32(vget_low_f32(sum_vec), vget_high_f32(sum_vec));
+    float sum = vget_lane_f32(vpadd_f32(sum_2, sum_2), 0);
+    
+    // Handle remaining elements
+    for (; i < qty; i++) {
+        float diff = pVect1[i] - pVect2[i];
+        sum += diff * diff;
+    }
+    
+    return sum;
+}
+
+// NEON-optimized L2 distance with normalization
+static float L2SqrNEON16Ext(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    float *pVect1 = (float *)pVect1v;
+    float *pVect2 = (float *)pVect2v;
+    size_t qty = *((size_t *)qty_ptr);
+    
+    float32x4_t sum_vec = vdupq_n_f32(0.0f);
+    
+    size_t i = 0;
+    for (; i + 16 <= qty; i += 16) {
+        float32x4_t v1_0 = vld1q_f32(pVect1 + i);
+        float32x4_t v2_0 = vld1q_f32(pVect2 + i);
+        float32x4_t diff_0 = vsubq_f32(v1_0, v2_0);
+        sum_vec = vmlaq_f32(sum_vec, diff_0, diff_0);
+        
+        float32x4_t v1_1 = vld1q_f32(pVect1 + i + 4);
+        float32x4_t v2_1 = vld1q_f32(pVect2 + i + 4);
+        float32x4_t diff_1 = vsubq_f32(v1_1, v2_1);
+        sum_vec = vmlaq_f32(sum_vec, diff_1, diff_1);
+        
+        float32x4_t v1_2 = vld1q_f32(pVect1 + i + 8);
+        float32x4_t v2_2 = vld1q_f32(pVect2 + i + 8);
+        float32x4_t diff_2 = vsubq_f32(v1_2, v2_2);
+        sum_vec = vmlaq_f32(sum_vec, diff_2, diff_2);
+        
+        float32x4_t v1_3 = vld1q_f32(pVect1 + i + 12);
+        float32x4_t v2_3 = vld1q_f32(pVect2 + i + 12);
+        float32x4_t diff_3 = vsubq_f32(v1_3, v2_3);
+        sum_vec = vmlaq_f32(sum_vec, diff_3, diff_3);
+    }
+    
+    float32x2_t sum_2 = vadd_f32(vget_low_f32(sum_vec), vget_high_f32(sum_vec));
+    float sum = vget_lane_f32(vpadd_f32(sum_2, sum_2), 0);
+    
+    for (; i < qty; i++) {
+        float diff = pVect1[i] - pVect2[i];
+        sum += diff * diff;
+    }
+    
+    return sum;
+}
+
+#endif // __ARM_NEON
+
+// ============================================================================
+// Inner Product (Cosine) Space with NEON Support
+// ============================================================================
+
+#ifdef __ARM_NEON
+
+// NEON-optimized inner product distance (1 - dot product for normalized vectors)
+static float InnerProductNEON(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    float *pVect1 = (float *)pVect1v;
+    float *pVect2 = (float *)pVect2v;
+    size_t qty = *((size_t *)qty_ptr);
+    
+    float32x4_t sum_vec = vdupq_n_f32(0.0f);
+    
+    size_t i = 0;
+    // Process 16 floats at a time
+    for (; i + 16 <= qty; i += 16) {
+        float32x4_t v1_0 = vld1q_f32(pVect1 + i);
+        float32x4_t v2_0 = vld1q_f32(pVect2 + i);
+        sum_vec = vmlaq_f32(sum_vec, v1_0, v2_0);
+        
+        float32x4_t v1_1 = vld1q_f32(pVect1 + i + 4);
+        float32x4_t v2_1 = vld1q_f32(pVect2 + i + 4);
+        sum_vec = vmlaq_f32(sum_vec, v1_1, v2_1);
+        
+        float32x4_t v1_2 = vld1q_f32(pVect1 + i + 8);
+        float32x4_t v2_2 = vld1q_f32(pVect2 + i + 8);
+        sum_vec = vmlaq_f32(sum_vec, v1_2, v2_2);
+        
+        float32x4_t v1_3 = vld1q_f32(pVect1 + i + 12);
+        float32x4_t v2_3 = vld1q_f32(pVect2 + i + 12);
+        sum_vec = vmlaq_f32(sum_vec, v1_3, v2_3);
+    }
+    
+    // Process remaining 4-element blocks
+    for (; i + 4 <= qty; i += 4) {
+        float32x4_t v1 = vld1q_f32(pVect1 + i);
+        float32x4_t v2 = vld1q_f32(pVect2 + i);
+        sum_vec = vmlaq_f32(sum_vec, v1, v2);
+    }
+    
+    // Horizontal sum
+    float32x2_t sum_2 = vadd_f32(vget_low_f32(sum_vec), vget_high_f32(sum_vec));
+    float sum = vget_lane_f32(vpadd_f32(sum_2, sum_2), 0);
+    
+    // Handle remaining elements
+    for (; i < qty; i++) {
+        sum += pVect1[i] * pVect2[i];
+    }
+    
+    return 1.0f - sum;
+}
+
+// NEON-optimized inner product with 16-element blocks
+static float InnerProductNEON16Ext(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    float *pVect1 = (float *)pVect1v;
+    float *pVect2 = (float *)pVect2v;
+    size_t qty = *((size_t *)qty_ptr);
+    
+    float32x4_t sum_vec = vdupq_n_f32(0.0f);
+    
+    size_t i = 0;
+    for (; i + 16 <= qty; i += 16) {
+        float32x4_t v1_0 = vld1q_f32(pVect1 + i);
+        float32x4_t v2_0 = vld1q_f32(pVect2 + i);
+        sum_vec = vmlaq_f32(sum_vec, v1_0, v2_0);
+        
+        float32x4_t v1_1 = vld1q_f32(pVect1 + i + 4);
+        float32x4_t v2_1 = vld1q_f32(pVect2 + i + 4);
+        sum_vec = vmlaq_f32(sum_vec, v1_1, v2_1);
+        
+        float32x4_t v1_2 = vld1q_f32(pVect1 + i + 8);
+        float32x4_t v2_2 = vld1q_f32(pVect2 + i + 8);
+        sum_vec = vmlaq_f32(sum_vec, v1_2, v2_2);
+        
+        float32x4_t v1_3 = vld1q_f32(pVect1 + i + 12);
+        float32x4_t v2_3 = vld1q_f32(pVect2 + i + 12);
+        sum_vec = vmlaq_f32(sum_vec, v1_3, v2_3);
+    }
+    
+    float32x2_t sum_2 = vadd_f32(vget_low_f32(sum_vec), vget_high_f32(sum_vec));
+    float sum = vget_lane_f32(vpadd_f32(sum_2, sum_2), 0);
+    
+    for (; i < qty; i++) {
+        sum += pVect1[i] * pVect2[i];
+    }
+    
+    return 1.0f - sum;
+}
+
+#endif // __ARM_NEON
+
+// ============================================================================
+// Modified L2Space class with NEON support
+// ============================================================================
+
+class L2Space : public SpaceInterface<float> {
+    DISTFUNC<float> fstdistfunc_;
+    size_t data_size_;
+    size_t dim_;
+
+public:
+    L2Space(size_t dim) {
+        // Select the appropriate distance function based on available SIMD
+#if defined(USE_AVX512)
+        fstdistfunc_ = L2SqrSIMD16ExtAVX512;
+#elif defined(USE_AVX)
+        fstdistfunc_ = L2SqrSIMD16Ext;
+#elif defined(__ARM_NEON)
+        fstdistfunc_ = L2SqrNEON16Ext;
+#else
+        fstdistfunc_ = L2Sqr;
+#endif
+        dim_ = dim;
+        data_size_ = dim * sizeof(float);
+    }
+
+    size_t get_data_size() {
+        return data_size_;
+    }
+
+    DISTFUNC<float> get_dist_func() {
+        return fstdistfunc_;
+    }
+
+    void *get_dist_func_param() {
+        return &dim_;
+    }
+
+    ~L2Space() {}
+};
+
+// ============================================================================
+// Modified InnerProductSpace class with NEON support
+// ============================================================================
+
+class InnerProductSpace : public SpaceInterface<float> {
+    DISTFUNC<float> fstdistfunc_;
+    size_t data_size_;
+    size_t dim_;
+
+public:
+    InnerProductSpace(size_t dim) {
+        // Select the appropriate distance function based on available SIMD
+#if defined(USE_AVX512)
+        fstdistfunc_ = InnerProductSIMD16ExtAVX512;
+#elif defined(USE_AVX)
+        fstdistfunc_ = InnerProductSIMD16Ext;
+#elif defined(__ARM_NEON)
+        fstdistfunc_ = InnerProductNEON16Ext;
+#else
+        fstdistfunc_ = InnerProduct;
+#endif
+        dim_ = dim;
+        data_size_ = dim * sizeof(float);
+    }
+
+    size_t get_data_size() {
+        return data_size_;
+    }
+
+    DISTFUNC<float> get_dist_func() {
+        return fstdistfunc_;
+    }
+
+    void *get_dist_func_param() {
+        return &dim_;
+    }
+
+    ~InnerProductSpace() {}
+};
+
+// ============================================================================
+// NEON-optimized normalization functions
+// ============================================================================
+
+#ifdef __ARM_NEON
+
+inline void normalize_vector_neon(float* data, size_t dim) {
+    float32x4_t sum_vec = vdupq_n_f32(0.0f);
+    
+    size_t i = 0;
+    // Compute squared sum
+    for (; i + 4 <= dim; i += 4) {
+        float32x4_t v = vld1q_f32(data + i);
+        sum_vec = vmlaq_f32(sum_vec, v, v);
+    }
+    
+    float32x2_t sum_2 = vadd_f32(vget_low_f32(sum_vec), vget_high_f32(sum_vec));
+    float sum = vget_lane_f32(vpadd_f32(sum_2, sum_2), 0);
+    
+    for (; i < dim; i++) {
+        sum += data[i] * data[i];
+    }
+    
+    // Compute norm
+    float norm = std::sqrt(sum + 1e-30f);
+    float32x4_t norm_vec = vdupq_n_f32(1.0f / norm);
+    
+    // Normalize
+    i = 0;
+    for (; i + 4 <= dim; i += 4) {
+        float32x4_t v = vld1q_f32(data + i);
+        v = vmulq_f32(v, norm_vec);
+        vst1q_f32(data + i, v);
+    }
+    
+    float norm_scalar = 1.0f / norm;
+    for (; i < dim; i++) {
+        data[i] *= norm_scalar;
+    }
+}
+
+#endif // __ARM_NEON
+
+} // namespace hnswlib
+
+// ============================================================================
+// CMakeLists.txt additions for NEON support
+// ============================================================================
+
+/*
+Add to CMakeLists.txt:
+
+# Detect ARM architecture
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm" OR CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+    message(STATUS "ARM architecture detected, enabling NEON")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-mfpu=neon)
+        add_definitions(-D__ARM_NEON)
+    endif()
+endif()
+*/
+
+// ============================================================================
+// Makefile additions for NEON support
+// ============================================================================
+
+/*
+Add to Makefile:
+
+# Detect architecture
+ARCH := $(shell uname -m)
+
+ifeq ($(ARCH),aarch64)
+    CXXFLAGS += -D__ARM_NEON
+    ARCH_FLAGS = -march=armv8-a
+else ifeq ($(ARCH),armv7l)
+    CXXFLAGS += -D__ARM_NEON -mfpu=neon
+    ARCH_FLAGS = -march=armv7-a
+else ifeq ($(ARCH),x86_64)
+    ARCH_FLAGS = -march=native
+endif
+
+CXXFLAGS += $(ARCH_FLAGS)
+*/
+
+// ============================================================================
+// Performance comparison example
+// ============================================================================
+
+/*
+Expected performance improvements with NEON vs scalar:
+
+L2 Distance (768-dimensional vectors):
+- Scalar: ~100-150 ns per distance calculation
+- NEON:   ~30-50 ns per distance calculation
+- Speedup: 3-5x
+
+Inner Product (768-dimensional vectors):
+- Scalar: ~90-140 ns per distance calculation
+- NEON:   ~25-45 ns per distance calculation  
+- Speedup: 3-5x
+
+On Apple M1/M2/M3:
+- Even better performance due to wider execution units
+- Speedup: 4-6x
+
+On AWS Graviton 2/3:
+- Good performance with SVE support
+- Speedup: 3-5x
+*/
+
+// ============================================================================
+// Testing snippet
+// ============================================================================
+
+#ifdef INCLUDE_TEST
+
+#include <iostream>
+#include <chrono>
+#include <random>
+
+void test_neon_performance() {
+    const size_t dim = 768;
+    const size_t num_tests = 100000;
+    
+    std::vector<float> v1(dim);
+    std::vector<float> v2(dim);
+    
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    
+    for (auto& x : v1) x = dist(gen);
+    for (auto& x : v2) x = dist(gen);
+    
+    // Test L2 distance
+    auto start = std::chrono::high_resolution_clock::now();
+    float result = 0.0f;
+    for (size_t i = 0; i < num_tests; i++) {
+#ifdef __ARM_NEON
+        result += hnswlib::L2SqrNEON(v1.data(), v2.data(), &dim);
+#else
+        result += hnswlib::L2Sqr(v1.data(), v2.data(), &dim);
+#endif
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    
+    std::cout << "L2 Distance:\n";
+    std::cout << "  Total time: " << (duration / 1e6) << " ms\n";
+    std::cout << "  Per distance: " << (duration / num_tests) << " ns\n";
+    std::cout << "  Result (to prevent optimization): " << result << "\n";
+}
+
+#endif // INCLUDE_TEST

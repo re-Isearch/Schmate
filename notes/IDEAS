@@ -1,0 +1,80 @@
+
+// Bit shifts and masks
+constexpr uint8_t  _ID_BITS = 40;
+constexpr uint64_t _ID_MASK = (1ULL << _ID_BITS) - 1; // 0x000000FFFFFFFFFF
+
+constexpr uint8_t  _CAT_BITS = 8;
+constexpr uint64_t _CAT_MASK = (1ULL << _CAT_BITS) - 1; // 0xFF
+
+/**
+ * @brief Constructs the master 64-bit coordinate label.
+ * @param sequential_xx   The dense loop increment tracking key (0, 1, 2...)
+ * @param category_id     The soft re-ranking category weight (0-255)
+ * @param app_filter_mask The 16-bit application-driven hard filter bitfield
+ */
+inline hnswlib::labeltype pack_core_quarry_label(uint64_t sequential_xx, 
+                                                 uint8_t category_id, 
+                                                 uint16_t app_filter_mask) 
+{
+    uint64_t clean_id   = sequential_xx & _ID_MASK;
+    uint64_t shifted_cat = (static_cast<uint64_t>(category_id) & _CAT_MASK) << _ID_BITS;
+    uint64_t shifted_app = static_cast<uint64_t>(app_filter_mask) << 48;
+
+    return static_cast<hnswlib::labeltype>(shifted_app | shifted_cat | clean_id);
+}
+
+
+
+
+// Inside your MetaMaskFilter functor:
+inline bool operator()(hnswlib::labeltype label) const {
+    uint16_t label_app_mask = static_cast<uint16_t>(label >> 48);
+    
+    // Hard check: Boolean pass or fail
+    return (label_app_mask & target_search_mask) != 0;
+}
+
+
+
+
+struct QueryResult {
+    uint64_t doc_id;
+    float final_score;
+};
+
+// Post-processing re-ranking pass
+std::vector<QueryResult> rerank_results(const std::vector<std::pair<float, hnswlib::labeltype>>& hnsw_raw_out, 
+                                        uint8_t user_preferred_category) 
+{
+    std::vector<QueryResult> balanced_results;
+
+    for (const auto& res : hnsw_raw_out) {
+        float raw_distance = res.first;
+        hnswlib::labeltype label = res.second;
+
+        // Unpack your separate targets
+        uint64_t real_doc_id = label & _ID_MASK;
+        uint8_t item_category = static_cast<uint8_t>((label >> _ID_BITS) & _CAT_MASK);
+
+        // Calculate a proximity boost factor
+        float score_modifier = 1.0f;
+        if (item_category == user_preferred_category) {
+            // Pull similar records closer by reducing distance score dynamically
+            score_modifier = 0.85f; 
+        }
+
+        balanced_results.push_back({
+            real_doc_id,
+            raw_distance * score_modifier
+        });
+    }
+
+    // Sort again by the newly adjusted distance metric
+    std::sort(balanced_results.begin(), balanced_results.end(), [](const QueryResult& a, const QueryResult& b) {
+        return a.final_score < b.final_score;
+    });
+
+    return balanced_results;
+}
+
+

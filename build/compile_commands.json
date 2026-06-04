@@ -1,0 +1,218 @@
+[
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_SHARED -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_BLAS -DGGML_USE_CPU -DGGML_USE_METAL -DGGML_USE_METAL=1 -Dbert_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++20 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/bert.dir/bert.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/bert.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/bert.cpp",
+  "output": "bert_build/CMakeFiles/bert.dir/bert.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/cc -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml.c.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml.c",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml.c",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/cc -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml-alloc.c.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-alloc.c",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-alloc.c",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml-backend.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend-meta.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend-meta.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml-opt.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-opt.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-opt.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml-threading.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-threading.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-threading.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/cc -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/ggml-quants.c.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-quants.c",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-quants.c",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BUILD -DGGML_COMMIT=\\\"0ce7ad34\\\" -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_VERSION=\\\"0.12.0\\\" -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_base_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-base.dir/gguf.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/gguf.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/gguf.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/cc -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/ggml-cpu.c",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/ggml-cpu.c",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/ggml-cpu.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/ggml-cpu.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/repack.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/repack.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/hbm.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/hbm.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/cc -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/quants.c",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/quants.c",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/traits.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/traits.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/amx/amx.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/amx/amx.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/amx/mmq.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/amx/mmq.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/binary-ops.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/binary-ops.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/unary-ops.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/unary-ops.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/vec.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/vec.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/ops.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/ops.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/cc -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/arch/arm/quants.c",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/arch/arm/quants.c",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU_REPACK -DGGML_USE_METAL -DGGML_USE_METAL=1 -DGGML_USE_OPENMP -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_cpu_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -Xclang -fopenmp -o CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/arch/arm/repack.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-cpu/arch/arm/repack.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_SHARED -DGGML_BUILD -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_BLAS -DGGML_USE_CPU -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml.dir/ggml-backend-dl.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend-dl.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend-dl.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml.dir/ggml-backend-dl.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_SHARED -DGGML_BUILD -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_BLAS -DGGML_USE_CPU -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend-reg.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-backend-reg.cpp",
+  "output": "bert_build/ggml/src/CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-blas",
+  "command": "/usr/bin/c++ -DACCELERATE_LAPACK_ILP64 -DACCELERATE_NEW_LAPACK -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_BLAS_USE_ACCELERATE -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_blas_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-blas/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-blas/ggml-blas.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-blas/ggml-blas.cpp",
+  "output": "bert_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/ggml-blas.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/ggml-metal.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal.cpp",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/cc -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/ggml-metal-device.m.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-device.m",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-device.m",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-device.m.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/ggml-metal-device.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-device.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/ggml-metal-common.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-common.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/cc -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu11 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/ggml-metal-context.m.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-context.m",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-context.m",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-context.m.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -DNDEBUG -O3 -std=gnu++17 -arch arm64 -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/ggml-metal-ops.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-ops.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal",
+  "command": "/usr/bin/cc -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_METAL_EMBED_LIBRARY -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_METAL -DGGML_USE_METAL=1 -D_DARWIN_C_SOURCE -D_XOPEN_SOURCE=600 -Dggml_metal_EXPORTS -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/ggml-metal/.. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -I/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Foundation.framework -I/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Metal.framework -I/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/MetalKit.framework -O3 -DNDEBUG -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -fPIC -O3 -fPIC -Wno-format -o CMakeFiles/ggml-metal.dir/autogenerated/ggml-metal-embed.s.o -c /Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal/autogenerated/ggml-metal-embed.s",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/ggml/src/ggml-metal/autogenerated/ggml-metal-embed.s",
+  "output": "bert_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/autogenerated/ggml-metal-embed.s.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/examples",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_SHARED -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_BLAS -DGGML_USE_CPU -DGGML_USE_METAL -DGGML_USE_METAL=1 -I/Volumes/Celeritas/CoreQuarry/Schmate -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++20 -arch arm64 -O3 -fPIC -Wno-format -o CMakeFiles/main.dir/main.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/examples/main.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/examples/main.cpp",
+  "output": "bert_build/examples/CMakeFiles/main.dir/main.cpp.o"
+},
+{
+  "directory": "/Volumes/Celeritas/CoreQuarry/Schmate/build/bert_build/examples",
+  "command": "/usr/bin/c++ -DGGML_BACKEND_SHARED -DGGML_SHARED -DGGML_USE_ACCELERATE=1 -DGGML_USE_BLAS -DGGML_USE_CPU -DGGML_USE_METAL -DGGML_USE_METAL=1 -I/Volumes/Celeritas/CoreQuarry/Schmate -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/. -I/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/ggml/src/../include -O3 -DNDEBUG -O3 -std=gnu++20 -arch arm64 -O3 -fPIC -Wno-format -o CMakeFiles/bench.dir/bench.cpp.o -c /Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/examples/bench.cpp",
+  "file": "/Volumes/Celeritas/CoreQuarry/Schmate/bert.cpp/examples/bench.cpp",
+  "output": "bert_build/examples/CMakeFiles/bench.dir/bench.cpp.o"
+}
+]

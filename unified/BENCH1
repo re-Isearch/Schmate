@@ -1,0 +1,18 @@
+
+Dimension: 128
+Data points: 50000
+Queries: 1000
+k: 10
+
+Mode                  Build (ms)  Query (ms)    Recall Bytes/Vec Memory (KB)
+----------------------------------------------------------------------------
+INT8-STANDARD            16552.9      316.30    0.9948       128        6250
+INT8-CENTROID            16773.0      316.66    0.9960       128        6250
+INT8-ROTATIONAL          16894.0      324.32    0.9950       128        6250
+INT4-STANDARD            21500.4      422.69    0.9983        64        3125
+INT4-ROTATIONAL          22271.1      429.48    0.9981        64        3125
+BIN1-STANDARD             3315.2       50.87    0.7001        16         781
+BIN1-ROTATIONAL           5093.3       80.09    0.7249        16         781
+
+
+

@@ -1,0 +1,79 @@
+
+
+
+
+struct FILEostream : std::ostream {
+    explicit FILEostream(FILE* f)
+        : std::ostream(nullptr)
+        , sb(fileno(f), std::ios::out | std::ios::binary)
+    {
+        rdbuf(&sb);   // now ostream points at our sb
+    }
+private:
+#ifdef __GLIBCXX__
+    __gnu_cxx::stdio_filebuf<char> sb;
+#else
+    FILEoutbuf sb;
+#endif
+};
+
+
+FILE* f = fopen_high("file.bin", "wb");
+{
+    FILEostream os(f);
+    os << some_data;
+    os.flush();
+}   // os destroyed -> sb destroyed, f still open
+fclose(f);
+
+
+
+
+
+
+
+
+
+
+
+auto os = std::unique_ptr<std::ostream>(ostream_from_FILE(f));
+
+
+FILE* f = fopen_high("file.bin", "wb");
+{
+    auto os = std::unique_ptr<std::ostream>(ostream_from_FILE(f));
+    *os << some_data;
+    os->flush();
+    // os destroyed here -- does NOT close f
+}
+
+
+
+#ifdef __GLIBCXX__
+  #include <ext/stdio_filebuf.h>
+  inline std::ostream* ostream_from_FILE(FILE* f) {
+      auto* sb = new __gnu_cxx::stdio_filebuf<char>(fileno(f), std::ios::out | std::ios::binary);
+      return new std::ostream(sb);
+  }
+#else
+  // libc++ fallback - wrap into a custom streambuf that writes to FILE*
+  #include <streambuf>
+  #include <ostream>
+
+  struct FILEoutbuf : std::streambuf {
+      FILEoutbuf(FILE* f) : f(f) {}
+  protected:
+      int overflow(int c) override {
+          return (c != EOF && fputc(c, f) != EOF) ? c : EOF;
+      }
+      std::streamsize xsputn(const char* s, std::streamsize n) override {
+          return fwrite(s, 1, n, f);
+      }
+  private:
+      FILE* f;
+  };
+
+  inline std::ostream* ostream_from_FILE(FILE* f) {
+      return new std::ostream(new FILEoutbuf(f));
+  }
+#endif

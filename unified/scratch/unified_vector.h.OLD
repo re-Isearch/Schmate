@@ -1,0 +1,265 @@
+
+// Add to your class definition
+enum class VectorStorageMode {
+    DISABLED,     // Skip vectors entirely
+    IN_MEMORY,    // Load all vectors into RAM
+    MEMORY_MAPPED // Use mmap for on-demand access
+};
+
+class VectorIndex {
+private:
+    VectorStorageMode storage_mode_;
+    
+    // For in-memory storage
+    std::unordered_map<labeltype, std::vector<float>> original_vectors_;
+    
+    // For memory-mapped storage
+    void* mmap_ptr_ = nullptr;
+    size_t mmap_size_ = 0;
+    int mmap_fd_ = -1;
+    size_t vectors_file_offset_ = 0;  // Offset where vector data starts
+    std::unordered_map<labeltype, size_t> label_to_offset_;  // Label -> file offset
+    
+public:
+    // Load vectors based on chosen mode
+    bool load_vectors(std::ifstream& ifs, size_t num_vectors, 
+                      VectorStorageMode mode = VectorStorageMode::IN_MEMORY) {
+        storage_mode_ = mode;
+        
+        if (storage_mode_ == VectorStorageMode::DISABLED) {
+            // Skip all vector data
+            for (size_t i = 0; i < num_vectors; i++) {
+                ifs.seekg(sizeof(labeltype) + dim_ * sizeof(float), std::ios::cur);
+            }
+            return true;
+        }
+        
+        if (storage_mode_ == VectorStorageMode::IN_MEMORY) {
+            return load_vectors_in_memory(ifs, num_vectors);
+        }
+        
+        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED) {
+            return load_vectors_mmap(ifs, num_vectors);
+        }
+        
+        return false;
+    }
+    
+private:
+    bool load_vectors_in_memory(std::ifstream& ifs, size_t num_vectors) {
+        original_vectors_.clear();
+        
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            
+            std::vector<float> vec(dim_);
+            ifs.read(reinterpret_cast<char*>(vec.data()), dim_ * sizeof(float));
+            
+            if (!ifs.good()) return false;
+            
+            original_vectors_[label] = std::move(vec);
+        }
+        
+        return true;
+    }
+    
+    bool load_vectors_mmap(std::ifstream& ifs, size_t num_vectors) {
+        // Record current position - this is where vector data starts
+        vectors_file_offset_ = ifs.tellg();
+        
+        // Build label->offset index
+        label_to_offset_.clear();
+        size_t current_offset = 0;
+        
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            
+            // Store offset for this label
+            label_to_offset_[label] = current_offset;
+            
+            // Skip the vector data
+            ifs.seekg(dim_ * sizeof(float), std::ios::cur);
+            
+            if (!ifs.good()) return false;
+            
+            current_offset += sizeof(labeltype) + dim_ * sizeof(float);
+        }
+        
+        // Now set up memory mapping
+        // Get the file descriptor from the stream (platform-specific)
+        // This is a simplified example - in practice you'd need to reopen the file
+        // or use a different approach
+        
+        #ifdef _WIN32
+            // Windows implementation using CreateFileMapping
+            return setup_mmap_windows();
+        #else
+            // Unix/Linux implementation
+            return setup_mmap_unix();
+        #endif
+    }
+    
+    #ifndef _WIN32
+    bool setup_mmap_unix() {
+        // You'll need the filename - either pass it separately or store it
+        // For this example, assume we have it
+        const char* filename = get_filename();
+        
+        mmap_fd_ = open(filename, O_RDONLY);
+        if (mmap_fd_ == -1) return false;
+        
+        // Get file size
+        struct stat sb;
+        if (fstat(mmap_fd_, &sb) == -1) {
+            close(mmap_fd_);
+            return false;
+        }
+        
+        mmap_size_ = sb.st_size;
+        
+        // Map the file
+        mmap_ptr_ = mmap(nullptr, mmap_size_, PROT_READ, MAP_PRIVATE, mmap_fd_, 0);
+        if (mmap_ptr_ == MAP_FAILED) {
+            close(mmap_fd_);
+            mmap_ptr_ = nullptr;
+            return false;
+        }
+        
+        // Optional: advise kernel about access pattern
+        madvise(mmap_ptr_, mmap_size_, MADV_RANDOM);
+        
+        return true;
+    }
+    #endif
+    
+public:
+    // Unified interface to get a vector regardless of storage mode
+    const float* get_vector(labeltype label) const {
+        if (storage_mode_ == VectorStorageMode::DISABLED) {
+            return nullptr;
+        }
+        
+        if (storage_mode_ == VectorStorageMode::IN_MEMORY) {
+            auto it = original_vectors_.find(label);
+            if (it == original_vectors_.end()) return nullptr;
+            return it->second.data();
+        }
+        
+        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED) {
+            return get_vector_from_mmap(label);
+        }
+        
+        return nullptr;
+    }
+    
+private:
+    const float* get_vector_from_mmap(labeltype label) const {
+        if (!mmap_ptr_) return nullptr;
+        
+        auto it = label_to_offset_.find(label);
+        if (it == label_to_offset_.end()) return nullptr;
+        
+        size_t offset = vectors_file_offset_ + it->second + sizeof(labeltype);
+        
+        // Return pointer directly into mapped memory
+        return reinterpret_cast<const float*>(
+            static_cast<char*>(mmap_ptr_) + offset
+        );
+    }
+    
+public:
+    // Cleanup
+    ~VectorIndex() {
+        cleanup_mmap();
+    }
+    
+private:
+    void cleanup_mmap() {
+        #ifndef _WIN32
+        if (mmap_ptr_ != nullptr && mmap_ptr_ != MAP_FAILED) {
+            munmap(mmap_ptr_, mmap_size_);
+            mmap_ptr_ = nullptr;
+        }
+        if (mmap_fd_ != -1) {
+            close(mmap_fd_);
+            mmap_fd_ = -1;
+        }
+        #else
+        // Windows cleanup would go here
+        #endif
+    }
+};
+
+    // Check if rescoring is available
+    bool is_rescoring_enabled() const {
+        return storage_mode_ != VectorStorageMode::DISABLED;
+    }
+    
+    // Get storage mode info (useful for logging/diagnostics)
+    VectorStorageMode get_storage_mode() const {
+        return storage_mode_;
+    }
+};
+
+// Updated rescoring code that works with all storage modes:
+void rescore_candidates(const float* query_ptr,
+                       const std::vector<std::pair<float, labeltype>>& all_candidates,
+                       std::vector<std::pair<float, labeltype>>& rescored) {
+    
+    if (!is_rescoring_enabled()) {
+        // If rescoring is disabled, just copy candidates as-is
+        rescored = all_candidates;
+        return;
+    }
+    
+    rescored.clear();
+    rescored.reserve(all_candidates.size());
+    
+    for (const auto& [dist, label] : all_candidates) {
+        // Use unified interface - works for both in-memory and mmap
+        const float* vec_ptr = get_vector(label);
+        
+        if (vec_ptr != nullptr) {
+            float true_dist;
+            if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
+                float sim = hnswlib::cosine_similarity(query_ptr, vec_ptr, dim_);
+                true_dist = -sim;
+            } else {
+                true_dist = l2_distance(query_ptr, vec_ptr, dim_);
+            }
+            rescored.emplace_back(true_dist, label);
+        } else {
+            // Vector not found - this shouldn't happen normally
+            // You might want to log this or use approximate distance as fallback
+            rescored.emplace_back(dist, label);
+        }
+    }
+}
+
+/*
+// Usage example:
+void example_usage() {
+    VectorIndex index;
+    std::ifstream ifs("vectors.bin", std::ios::binary);
+    
+    size_t num_vectors = 1000000;
+    
+    // Choose your mode:
+    
+    // Option 1: Load everything into RAM (fast access, high memory)
+    index.load_vectors(ifs, num_vectors, VectorStorageMode::IN_MEMORY);
+    
+    // Option 2: Use mmap (moderate access speed, low memory, OS handles paging)
+    index.load_vectors(ifs, num_vectors, VectorStorageMode::MEMORY_MAPPED);
+    
+    // Option 3: Skip entirely (no rescoring)
+    index.load_vectors(ifs, num_vectors, VectorStorageMode::DISABLED);
+    
+    // Rescoring now works uniformly across all modes:
+    std::vector<std::pair<float, labeltype>> all_candidates = /* ... */;
+    std::vector<std::pair<float, labeltype>> rescored;
+    index.rescore_candidates(query, all_candidates, rescored);
+}
+*/

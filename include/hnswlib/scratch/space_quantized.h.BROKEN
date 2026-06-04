@@ -1,0 +1,294 @@
+#pragma once
+#include <vector>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <algorithm>
+#include <numeric>
+#include <thread>
+#include <atomic>
+#include <cassert>
+#include <iostream>
+
+#include "hnswlib.h"
+#include "pearson_corr.h"
+
+#if defined(__AVX512F__)
+  #include <immintrin.h>
+  #define HNSW_SIMD_AVX512
+#elif defined(__AVX2__)
+  #include <immintrin.h>
+  #define HNSW_SIMD_AVX2
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+  #include <arm_neon.h>
+  #define HNSW_SIMD_NEON
+#elif defined(__ARM_FEATURE_SVE)
+  #include <arm_sve.h>
+  #define HNSW_SIMD_SVE
+#endif
+
+namespace hnswlib {
+
+enum class QuantMode { BIN1=0, INT4=1, INT8=2 };
+enum class BinMode  { STANDARD=0, BETTER=1 };
+
+
+/*
+// -----------------------------------------------------------------------------
+// Pearson correlation helper (used in Better BIN1)
+inline float pearson_corr(const std::vector<float>& a, const std::vector<float>& b) {
+    float mean_a = std::accumulate(a.begin(), a.end(), 0.f) / a.size();
+    float mean_b = std::accumulate(b.begin(), b.end(), 0.f) / b.size();
+    double num=0.0, da2=0.0, db2=0.0;
+    for (size_t i=0;i<a.size();++i) {
+        double da=a[i]-mean_a, db=b[i]-mean_b;
+        num+=da*db; da2+=da*da; db2+=db*db;
+    }
+    return float(num/std::sqrt(da2*db2+1e-12));
+}
+*/
+
+// =============================================================================
+template<typename T=float>
+class SpaceQuantized : public SpaceInterface<uint8_t> {
+public:
+    using DISTFUNC_TYPE = DISTFUNC<uint8_t>;
+
+    size_t dim;
+    QuantMode qmode;
+    BinMode bin_mode;
+    size_t bytes_per_vector;
+
+    std::vector<T> thresholds;
+    std::vector<T> scale, minval, scale_sq;
+
+    explicit SpaceQuantized(size_t dim_,
+                            QuantMode qmode_,
+                            BinMode bin_mode_ = BinMode::STANDARD,
+                            const std::vector<std::vector<T>>* sample_embeddings = nullptr)
+        : dim(dim_), qmode(qmode_), bin_mode(bin_mode_) {
+        assert(dim>0);
+        if (qmode==QuantMode::BIN1) {
+            bytes_per_vector=(dim+7)/8;
+            thresholds.assign(dim,T(0));
+            if (sample_embeddings) compute_thresholds(*sample_embeddings);
+        } else {
+            bytes_per_vector=(qmode==QuantMode::INT8)?dim:(dim+1)/2;
+            scale.assign(dim,1); minval.assign(dim,0); scale_sq.assign(dim,1);
+            if (sample_embeddings)
+                compute_scale_min(*sample_embeddings,(qmode==QuantMode::INT8)?255.0:15.0);
+        }
+    }
+
+    // -- interface compliance --------------------------------------------------
+    size_t get_data_size() override { return bytes_per_vector; }
+    DISTFUNC_TYPE get_dist_func() override { return &SpaceQuantized::fstdist_; }
+    void* get_dist_func_param() override { return this; }
+
+    // -------------------------------------------------------------------------
+    void quantize(const T* emb, uint8_t* out) const {
+        switch(qmode){
+            case QuantMode::BIN1: quantize_bin(emb,out); break;
+            case QuantMode::INT8: quantize_int8_simd(emb,out); break;
+            case QuantMode::INT4: quantize_int4_simd(emb,out); break;
+        }
+    }
+
+private:
+    // =================== DISTANCE ===========================================
+    static float fstdist_(const void* p1, const void* p2, const void* param) {
+        const auto* sp = reinterpret_cast<const SpaceQuantized*>(param);
+        return sp->compute_dist(reinterpret_cast<const uint8_t*>(p1),
+                                reinterpret_cast<const uint8_t*>(p2));
+    }
+
+    float compute_dist(const uint8_t* a, const uint8_t* b) const {
+        if (qmode==QuantMode::BIN1) {
+            uint32_t acc=0;
+            for(size_t i=0;i<bytes_per_vector;++i) acc+=__builtin_popcount(a[i]^b[i]);
+            return float(acc);
+        } else if (qmode==QuantMode::INT8) {
+#ifdef HNSW_SIMD_AVX2
+            size_t i=0;
+            __m256i sum=_mm256_setzero_si256();
+            for(;i+31<dim;i+=32){
+                __m256i va=_mm256_loadu_si256((__m256i*)(a+i));
+                __m256i vb=_mm256_loadu_si256((__m256i*)(b+i));
+                __m256i diff=_mm256_sub_epi8(va,vb);
+                __m256i lo=_mm256_unpacklo_epi8(diff,_mm256_setzero_si256());
+                __m256i hi=_mm256_unpackhi_epi8(diff,_mm256_setzero_si256());
+                sum=_mm256_add_epi32(sum,_mm256_madd_epi16(lo,lo));
+                sum=_mm256_add_epi32(sum,_mm256_madd_epi16(hi,hi));
+            }
+            alignas(32) int32_t tmp[8]; _mm256_store_si256((__m256i*)tmp,sum);
+            float acc=float(tmp[0]+tmp[1]+tmp[2]+tmp[3]+tmp[4]+tmp[5]+tmp[6]+tmp[7]);
+            for(;i<dim;++i){int d=int(a[i])-int(b[i]); acc+=d*d;}
+            return acc;
+#elif defined(HNSW_SIMD_NEON)
+            size_t i=0; uint32x4_t vsum=vdupq_n_u32(0);
+            for(;i+15<dim;i+=16){
+                uint8x16_t va=vld1q_u8(a+i), vb=vld1q_u8(b+i);
+                int16x8_t lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(va ^ vb)));
+                int16x8_t hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(va ^ vb)));
+                vsum = vaddq_u32(vsum, vmovl_u16(vadd_u16(vmovn_u32(vreinterpretq_u32_s32(vmlal_s16(vdupq_n_s16(0),lo,lo))),
+                                                          vmovn_u32(vreinterpretq_u32_s32(vmlal_s16(vdupq_n_s16(0),hi,hi))))));
+            }
+            uint32_t tmp[4]; vst1q_u32(tmp,vsum);
+            float acc=float(tmp[0]+tmp[1]+tmp[2]+tmp[3]);
+            for(;i<dim;++i){int d=int(a[i])-int(b[i]); acc+=d*d;}
+            return acc;
+#else
+            double acc=0; for(size_t i=0;i<dim;++i){int d=int(a[i])-int(b[i]); acc+=d*d;}
+            return float(acc);
+#endif
+        } else { // INT4 scalar
+            double acc=0;
+            for(size_t d=0;d<dim;d+=2){
+                uint8_t ba=a[d>>1], bb=b[d>>1];
+                uint8_t a0=ba&0x0F,a1=ba>>4,b0=bb&0x0F,b1=bb>>4;
+                int diff0=int(a0)-int(b0);
+                acc+=diff0*diff0*double(scale_sq[d]);
+                if(d+1<dim){int diff1=int(a1)-int(b1); acc+=diff1*diff1*double(scale_sq[d+1]);}
+            }
+            return float(acc);
+        }
+    }
+
+    // =================== SCALING / THRESHOLDS ===============================
+    void compute_thresholds(const std::vector<std::vector<T>>& samples){
+        const size_t n=samples.size();
+        std::vector<T> col(n);
+        for(size_t d=0;d<dim;++d){
+            for(size_t i=0;i<n;++i) col[i]=samples[i][d];
+            if(bin_mode==BinMode::STANDARD){
+                std::nth_element(col.begin(),col.begin()+n/2,col.end());
+                thresholds[d]=col[n/2];
+            }else{
+                std::sort(col.begin(),col.end());
+                T best_thr=col[n/2]; float best_corr=-1;
+                for(int k=1;k<99;++k){
+                    size_t id=k*n/100; T thr=col[id];
+                    std::vector<float> bits(n);
+                    for(size_t i=0;i<n;++i) bits[i]=(col[i]>thr)?1.f:0.f;
+                    float corr=std::fabs(pearson_corr(bits,col));
+                    if(corr>best_corr){best_corr=corr;best_thr=thr;}
+                }
+                thresholds[d]=best_thr;
+            }
+        }
+    }
+
+    void compute_scale_min(const std::vector<std::vector<T>>& samples,double levels){
+        const size_t n=samples.size();
+        for(size_t d=0;d<dim;++d){
+            T lo=samples[0][d],hi=lo;
+            for(size_t i=1;i<n;++i){T v=samples[i][d]; if(v<lo)lo=v; if(v>hi)hi=v;}
+            minval[d]=lo; scale[d]=(hi-lo)/levels; if(scale[d]==0)scale[d]=1; scale_sq[d]=scale[d]*scale[d];
+        }
+    }
+
+    // =================== QUANTIZATION ======================================
+    void quantize_bin(const T* emb,uint8_t* out) const {
+        std::memset(out,0,bytes_per_vector);
+        for(size_t i=0;i<dim;++i)
+            if(emb[i]>thresholds[i]) out[i>>3]|=uint8_t(1u<<(i&7));
+    }
+
+    // ----- INT8 SIMD path ---------------------------------------------------
+    void quantize_int8_simd(const T* emb,uint8_t* out) const {
+#if defined(HNSW_SIMD_AVX512)
+        size_t i=0;
+        for(;i+15<dim;i+=16){
+            __m512 vf=_mm512_loadu_ps(emb+i);
+            __m512 vmin=_mm512_loadu_ps(minval.data()+i);
+            __m512 vscale=_mm512_loadu_ps(scale.data()+i);
+            __m512 q=_mm512_div_ps(_mm512_sub_ps(vf,vmin),vscale);
+            __m512i qi=_mm512_cvtps_epi32(q);
+            qi=_mm512_min_epi32(_mm512_max_epi32(qi,_mm512_setzero_si512()),_mm512_set1_epi32(255));
+            __m128i pack=_mm512_cvtepi32_epi8(qi);
+            _mm_storeu_si128((__m128i*)(out+i),pack);
+        }
+        for(;i<dim;++i){
+            float v=(emb[i]-minval[i])/scale[i];
+            int qi=std::clamp(int(std::nearbyint(v)),0,255);
+            out[i]=uint8_t(qi);
+        }
+#elif defined(HNSW_SIMD_AVX2)
+        size_t i=0;
+        for(;i+7<dim;i+=8){
+            __m256 vf=_mm256_loadu_ps(emb+i);
+            __m256 vmin=_mm256_loadu_ps(minval.data()+i);
+            __m256 vscale=_mm256_loadu_ps(scale.data()+i);
+            __m256 q=_mm256_div_ps(_mm256_sub_ps(vf,vmin),vscale);
+            __m256i qi=_mm256_cvtps_epi32(q);
+            __m128i lo=_mm_packus_epi16(_mm_packs_epi32(_mm256_extracti128_si256(qi,0),
+                                                        _mm256_extracti128_si256(qi,1)),
+                                        _mm_setzero_si128());
+            _mm_storel_epi64((__m128i*)(out+i),lo);
+        }
+        for(;i<dim;++i){
+            float v=(emb[i]-minval[i])/scale[i];
+            int qi=std::clamp(int(std::nearbyint(v)),0,255);
+            out[i]=uint8_t(qi);
+        }
+#elif defined(HNSW_SIMD_NEON)
+        size_t i=0;
+        for(;i+15<dim;i+=16){
+            float32x4_t vf1=vld1q_f32(emb+i);
+            float32x4_t vf2=vld1q_f32(emb+i+4);
+            float32x4_t vf3=vld1q_f32(emb+i+8);
+            float32x4_t vf4=vld1q_f32(emb+i+12);
+            float32x4_t vmin1=vld1q_f32(minval.data()+i);
+            float32x4_t vscale1=vld1q_f32(scale.data()+i);
+            float32x4_t q1=vdivq_f32(vsubq_f32(vf1,vmin1),vscale1);
+            uint16x8_t q16 = vcombine_u16(vcvtq_u16_f32(q1),vcvtq_u16_f32(vf2)); // simplified
+            vst1q_u8(out+i, vmovn_u16(q16));
+        }
+        for(;i<dim;++i){
+            float v=(emb[i]-minval[i])/scale[i];
+            int qi=std::clamp(int(std::nearbyint(v)),0,255);
+            out[i]=uint8_t(qi);
+        }
+#else
+        for(size_t i=0;i<dim;++i){
+            float v=(emb[i]-minval[i])/scale[i];
+            int qi=std::clamp(int(std::nearbyint(v)),0,255);
+            out[i]=uint8_t(qi);
+        }
+#endif
+    }
+
+    // ----- INT4 SIMD path (pack 2 per byte) ---------------------------------
+    void quantize_int4_simd(const T* emb,uint8_t* out) const {
+#if defined(HNSW_SIMD_AVX2) || defined(HNSW_SIMD_NEON)
+        size_t i=0,idx=0;
+        for(;i+1<dim;i+=2){
+            float v0=(emb[i]-minval[i])/scale[i];
+            float v1=(emb[i+1]-minval[i+1])/scale[i+1];
+            int q0=std::clamp(int(std::nearbyint(v0)),0,15);
+            int q1=std::clamp(int(std::nearbyint(v1)),0,15);
+            out[idx++]=uint8_t((q1<<4)|q0);
+        }
+        if(i<dim){
+            float v0=(emb[i]-minval[i])/scale[i];
+            int q0=std::clamp(int(std::nearbyint(v0)),0,15);
+            out[idx]=uint8_t(q0&0x0F);
+        }
+#else
+        size_t idx=0;
+        for(size_t d=0;d<dim;d+=2){
+            float v0=(emb[d]-minval[d])/scale[d];
+            int q0=std::clamp(int(std::nearbyint(v0)),0,15);
+            int q1=0;
+            if(d+1<dim){
+                float v1=(emb[d+1]-minval[d+1])/scale[d+1];
+                q1=std::clamp(int(std::nearbyint(v1)),0,15);
+            }
+            out[idx++]=uint8_t((q1<<4)|(q0&0x0F));
+        }
+#endif
+    }
+};
+
+} // namespace hnswlib
+

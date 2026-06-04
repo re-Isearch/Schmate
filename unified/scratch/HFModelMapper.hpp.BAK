@@ -1,0 +1,83 @@
+#pragma once
+
+#ifndef HF_MODEL_MAPPER_H
+#define HF_MODEL_MAPPER_H
+
+#include "ModelPathStore.hpp"
+#include <string>
+#include <optional>
+
+// Maps mnemonic names to Hugging Face repository paths for GGUF models
+//
+// Text File Format
+// Create a text file with mappings (format: key=repo|filename):
+/*
+# hf_models.txt
+llama2_7b=TheBloke/Llama-2-7B-GGUF|llama-2-7b.Q4_K_M.gguf
+llama2_13b=TheBloke/Llama-2-13B-GGUF|llama-2-13b.Q4_K_M.gguf
+mistral_7b=TheBloke/Mistral-7B-Instruct-v0.2-GGUF|mistral-7b-instruct-v0.2.Q4_K_M.gguf
+codellama=TheBloke/CodeLlama-13B-GGUF|codellama-13b.Q4_K_M.gguf
+mixtral=TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF|mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf
+*/
+
+
+class HFModelMapper {
+public:
+    static constexpr size_t MAX_REPO_SIZE = 256;
+    static constexpr size_t MAX_FILENAME_SIZE = 256;
+    
+    struct HFMapping {
+        char key[ModelPathStore::KEY_SIZE];           // Mnemonic name
+        char repo[MAX_REPO_SIZE];                      // HF repo (e.g., "TheBloke/Llama-2-7B-GGUF")
+        char filename[MAX_FILENAME_SIZE];              // Model file (e.g., "llama-2-7b.Q4_K_M.gguf")
+        bool active;
+        
+        HFMapping() : key{0}, repo{0}, filename{0}, active(false) {}
+    };
+    
+    std::array<HFMapping, ModelPathStore::MAX_ENTRIES> mappings;
+    
+private:
+    size_t count;
+    
+public:
+    HFModelMapper();
+    
+    // Set a mapping from mnemonic to HF repo + filename
+    bool set(const std::string& key, const std::string& repo, const std::string& filename);
+    
+    // Get HF repo for a key
+    std::optional<std::string> getRepo(const std::string& key) const;
+    
+    // Get HF filename for a key
+    std::optional<std::string> getFilename(const std::string& key) const;
+    
+    // Get full HF path (repo + "/" + filename)
+    std::optional<std::string> getFullPath(const std::string& key) const;
+    
+    // Get HF URL for downloading
+    std::optional<std::string> getDownloadURL(const std::string& key) const;
+    
+    // Remove a mapping
+    bool remove(const std::string& key);
+    
+    // Get count of active mappings
+    inline size_t size() const { return count; }
+    
+    // Clear all mappings
+    void clear();
+    
+    // Save to binary file
+    bool save(const std::string& filename) const;
+    
+    // Load from binary file
+    bool load(const std::string& filename);
+    
+    // Export to text file (format: key=repo|filename)
+    bool exportToText(const std::string& filename) const;
+    
+    // Import from text file
+    bool importFromText(const std::string& filename);
+};
+
+#endif // HF_MODEL_MAPPER_H

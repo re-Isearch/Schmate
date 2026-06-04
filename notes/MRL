@@ -1,0 +1,14 @@
+void BertIndex::Flush() {
+    if (batch_buffer.empty()) return;
+    
+    // 1. Matrix Inference (The 745s -> 150s jump)
+    auto embeddings = model->encode_batch(batch_buffer.texts);
+    
+    // 2. Multi-Dimensional Storage (The Russian Doll)
+    for (size_t i = 0; i < embeddings.size(); ++i) {
+        // Store full 384-dim in .hix
+        // Compute RaBitQ on the 64-dim MRL subset
+        // Update HNSW graph
+    }
+    batch_buffer.clear();
+}

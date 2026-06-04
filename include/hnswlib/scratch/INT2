@@ -1,0 +1,263 @@
+#pragma once
+#include <vector>
+#include <cstdint>
+#include <fstream>
+#include <cstring>
+#include <cmath>
+#include <algorithm>
+#include <stdexcept>
+
+#if defined(__AVX512FP16__)
+  #include <immintrin.h>
+  #define HAS_AVX512FP16 1
+#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC__) || defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC__)
+  #include <arm_neon.h>
+  #define HAS_NEON_FP16 1
+#endif
+
+namespace hnswlib {
+
+enum class StorageType : uint32_t {
+    BIN1,
+    INT2,
+    INT4,
+    INT8,
+    INT16,
+    FP16,
+    FLOAT32
+};
+
+class IntStorage {
+public:
+    StorageType type;
+    size_t dim;
+    std::vector<uint8_t> data;
+
+    IntStorage(StorageType t = StorageType::FLOAT32, size_t d = 0)
+        : type(t), dim(d) {
+        resize_bytes();
+    }
+
+    //----------------------------------------------------------------------
+    // Resize helper
+    //----------------------------------------------------------------------
+    void resize(size_t new_dim) {
+        dim = new_dim;
+        resize_bytes();
+    }
+
+    void resize_bytes() {
+        size_t bits = bits_per_element();
+        data.resize((dim * bits + 7) / 8);
+    }
+
+    //----------------------------------------------------------------------
+    // Info
+    //----------------------------------------------------------------------
+    size_t bits_per_element() const noexcept {
+        switch (type) {
+            case StorageType::BIN1:   return 1;
+            case StorageType::INT2:   return 2;
+            case StorageType::INT4:   return 4;
+            case StorageType::INT8:   return 8;
+            case StorageType::INT16:  return 16;
+            case StorageType::FP16:   return 16;
+            case StorageType::FLOAT32:return 32;
+        }
+        return 0;
+    }
+
+    size_t bytes_per_vector() const noexcept {
+        return (dim * bits_per_element() + 7) / 8;
+    }
+
+    //----------------------------------------------------------------------
+    // Quantize / Dequantize
+    //----------------------------------------------------------------------
+    void quantize(const float* src, float scale = 1.0f);
+    void dequantize(float* dst, float scale = 1.0f) const;
+
+    //----------------------------------------------------------------------
+    // Save / Load
+    //----------------------------------------------------------------------
+    void save(const std::string &filename) const {
+        std::ofstream out(filename, std::ios::binary);
+        if (!out) throw std::runtime_error("Cannot open file for writing");
+        save(out);
+    }
+
+    void load(const std::string &filename) {
+        std::ifstream in(filename, std::ios::binary);
+        if (!in) throw std::runtime_error("Cannot open file for reading");
+        load(in);
+    }
+
+    void save(std::ostream &os) const {
+        const uint32_t magic = 0x4F545349; // "ISTO" little-endian
+        const uint32_t version = 1;
+        uint64_t dim64 = dim;
+        uint32_t type32 = static_cast<uint32_t>(type);
+
+        os.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        os.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        os.write(reinterpret_cast<const char*>(&type32), sizeof(type32));
+        os.write(reinterpret_cast<const char*>(&dim64), sizeof(dim64));
+        os.write(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+    void load(std::istream &is) {
+        uint32_t magic = 0;
+        uint32_t version = 0;
+        uint32_t type32 = 0;
+        uint64_t dim64 = 0;
+
+        is.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        if (magic != 0x4F545349) throw std::runtime_error("Bad magic in IntStorage file");
+        is.read(reinterpret_cast<char*>(&version), sizeof(version));
+        is.read(reinterpret_cast<char*>(&type32), sizeof(type32));
+        is.read(reinterpret_cast<char*>(&dim64), sizeof(dim64));
+
+        type = static_cast<StorageType>(type32);
+        dim = static_cast<size_t>(dim64);
+        resize_bytes();
+        is.read(reinterpret_cast<char*>(data.data()), data.size());
+    }
+
+private:
+    //----------------------------------------------------------------------
+    // Scalar implementations
+    //----------------------------------------------------------------------
+    static inline uint16_t float_to_half_bits(float f);
+    static inline float half_bits_to_float(uint16_t h);
+
+    // Binary
+    void quantize_bin1(const float *src);
+    void dequantize_bin1(float *dst) const;
+
+    // 2, 4, 8, 16-bit int
+    void quantize_int2(const float*, float);
+    void quantize_int4(const float*, float);
+    void quantize_int8(const float*, float);
+    void quantize_int16(const float*, float);
+    void dequantize_int2(float*, float) const;
+    void dequantize_int4(float*, float) const;
+    void dequantize_int8(float*, float) const;
+    void dequantize_int16(float*, float) const;
+
+    // Float16 and Float32
+    void quantize_fp16(const float*);
+    void dequantize_fp16(float*) const;
+    void quantize_f32(const float*);
+    void dequantize_f32(float*) const;
+};
+
+// -------------------- Inline definitions --------------------------
+
+inline void IntStorage::quantize(const float* src, float scale) {
+    switch (type) {
+        case StorageType::BIN1:   quantize_bin1(src); break;
+        case StorageType::INT2:   quantize_int2(src, scale); break;
+        case StorageType::INT4:   quantize_int4(src, scale); break;
+        case StorageType::INT8:   quantize_int8(src, scale); break;
+        case StorageType::INT16:  quantize_int16(src, scale); break;
+        case StorageType::FP16:   quantize_fp16(src); break;
+        case StorageType::FLOAT32:quantize_f32(src); break;
+    }
+}
+
+inline void IntStorage::dequantize(float* dst, float scale) const {
+    switch (type) {
+        case StorageType::BIN1:   dequantize_bin1(dst); break;
+        case StorageType::INT2:   dequantize_int2(dst, scale); break;
+        case StorageType::INT4:   dequantize_int4(dst, scale); break;
+        case StorageType::INT8:   dequantize_int8(dst, scale); break;
+        case StorageType::INT16:  dequantize_int16(dst, scale); break;
+        case StorageType::FP16:   dequantize_fp16(dst); break;
+        case StorageType::FLOAT32:dequantize_f32(dst); break;
+    }
+}
+
+// === FLOAT32 passthrough ===
+inline void IntStorage::quantize_f32(const float* src) {
+    std::memcpy(data.data(), src, dim * sizeof(float));
+}
+
+inline void IntStorage::dequantize_f32(float* dst) const {
+    std::memcpy(dst, data.data(), dim * sizeof(float));
+}
+
+// === Bin1 ===
+inline void IntStorage::quantize_bin1(const float* src) {
+    std::fill(data.begin(), data.end(), 0);
+    for (size_t i = 0; i < dim; ++i)
+        if (src[i] > 0) data[i >> 3] |= uint8_t(1u << (i & 7));
+}
+
+inline void IntStorage::dequantize_bin1(float* dst) const {
+    for (size_t i = 0; i < dim; ++i)
+        dst[i] = (data[i >> 3] >> (i & 7)) & 1 ? 1.f : -1.f;
+}
+
+// === INT2 / INT4 / INT8 / INT16 === (same as before, omitted for brevity)
+// You’d copy in the same scalar methods we discussed earlier here.
+// ... [snipped for readability in this message] ...
+
+// === FP16 ===
+inline uint16_t IntStorage::float_to_half_bits(float f) {
+    uint32_t x;
+    std::memcpy(&x, &f, sizeof(x));
+    uint16_t sign = (x >> 31) & 0x1;
+    int32_t exp = ((x >> 23) & 0xFF) - 127 + 15;
+    uint32_t mant = x & 0x7FFFFF;
+    if (exp <= 0) return sign << 15;
+    if (exp >= 31) return (sign << 15) | 0x7C00;
+    return (sign << 15) | (exp << 10) | (mant >> 13);
+}
+
+inline float IntStorage::half_bits_to_float(uint16_t h) {
+    uint32_t sign = (h >> 15) & 0x1;
+    uint32_t exp = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    uint32_t f;
+    if (exp == 0)
+        f = mant << 13;
+    else if (exp == 31)
+        f = 0x7F800000 | (mant << 13);
+    else
+        f = ((exp - 15 + 127) << 23) | (mant << 13);
+    f |= sign << 31;
+    float result;
+    std::memcpy(&result, &f, sizeof(result));
+    return result;
+}
+
+inline void IntStorage::quantize_fp16(const float* src) {
+    auto* out16 = reinterpret_cast<uint16_t*>(data.data());
+#if defined(HAS_AVX512FP16)
+    for (size_t i = 0; i < dim; ++i)
+        out16[i] = _cvtss_sh(src[i], 0);
+#elif defined(HAS_NEON_FP16)
+    for (size_t i = 0; i < dim; ++i)
+        out16[i] = vcvt_f16_f32(vdup_n_f32(src[i]))[0];
+#else
+    for (size_t i = 0; i < dim; ++i)
+        out16[i] = float_to_half_bits(src[i]);
+#endif
+}
+
+inline void IntStorage::dequantize_fp16(float* dst) const {
+    const uint16_t* in16 = reinterpret_cast<const uint16_t*>(data.data());
+#if defined(HAS_AVX512FP16)
+    for (size_t i = 0; i < dim; ++i)
+        dst[i] = _cvtsh_ss(in16[i]);
+#elif defined(HAS_NEON_FP16)
+    for (size_t i = 0; i < dim; ++i)
+        dst[i] = vcvt_f32_f16(vdup_n_f16(in16[i]))[0];
+#else
+    for (size_t i = 0; i < dim; ++i)
+        dst[i] = half_bits_to_float(in16[i]);
+#endif
+}
+
+} // namespace hnswlib
+

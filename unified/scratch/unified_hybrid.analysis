@@ -1,0 +1,306 @@
+// Strategy 1: Hybrid approach - Use in-memory buffer for new additions
+class HybridVectorStorage {
+private:
+    VectorStorageMode storage_mode_;
+    
+    // For mmap: persistent vectors
+    void* mmap_ptr_ = nullptr;
+    std::unordered_map<labeltype, size_t> mmap_label_to_offset_;
+    
+    // For new additions: in-memory buffer
+    std::unordered_map<labeltype, std::vector<float>> new_vectors_;
+    
+    // Track which labels are new vs mapped
+    std::unordered_set<labeltype> new_labels_;
+    
+public:
+    // Add a new vector
+    void addPoint(labeltype label, const float* data) {
+        if (storage_mode_ == VectorStorageMode::DISABLED) {
+            return;
+        }
+        
+        // Always add to in-memory buffer
+        new_vectors_[label] = std::vector<float>(data, data + dim_);
+        new_labels_.insert(label);
+    }
+    
+    // Get vector - check new vectors first, then mmap
+    const float* get_vector(labeltype label) const {
+        // Check if it's a newly added vector
+        if (new_labels_.count(label)) {
+            auto it = new_vectors_.find(label);
+            if (it != new_vectors_.end()) {
+                return it->second.data();
+            }
+        }
+        
+        // Otherwise, check mmap
+        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED && mmap_ptr_) {
+            auto it = mmap_label_to_offset_.find(label);
+            if (it != mmap_label_to_offset_.end()) {
+                size_t offset = it->second + sizeof(labeltype);
+                return reinterpret_cast<const float*>(
+                    static_cast<char*>(mmap_ptr_) + offset
+                );
+            }
+        }
+        
+        return nullptr;
+    }
+    
+    // Periodically flush new vectors to disk and remap
+    bool flush_to_disk(const std::string& filename) {
+        if (new_vectors_.empty()) {
+            return true;  // Nothing to flush
+        }
+        
+        // Unmap current file
+        cleanup_mmap();
+        
+        // Append new vectors to file
+        std::ofstream ofs(filename, std::ios::binary | std::ios::app);
+        if (!ofs) return false;
+        
+        for (const auto& [label, vec] : new_vectors_) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+        ofs.close();
+        
+        // Clear new vectors
+        new_vectors_.clear();
+        new_labels_.clear();
+        
+        // Re-open and remap the expanded file
+        std::ifstream ifs(filename, std::ios::binary);
+        // ... reload metadata and remap ...
+        
+        return true;
+    }
+};
+
+// Strategy 2: Keep everything in-memory until save
+class DelayedWriteVectorStorage {
+private:
+    VectorStorageMode storage_mode_;
+    std::unordered_map<labeltype, std::vector<float>> all_vectors_;
+    bool dirty_ = false;
+    
+public:
+    // Load from file
+    bool load_vectors(const std::string& filename, std::ifstream& ifs, 
+                      size_t num_vectors, VectorStorageMode mode) {
+        storage_mode_ = mode;
+        
+        if (mode == VectorStorageMode::DISABLED) {
+            // Skip
+            for (size_t i = 0; i < num_vectors; i++) {
+                ifs.seekg(sizeof(labeltype) + dim_ * sizeof(float), std::ios::cur);
+            }
+            return true;
+        }
+        
+        // Always load into memory initially (supports modifications)
+        all_vectors_.clear();
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            
+            std::vector<float> vec(dim_);
+            ifs.read(reinterpret_cast<char*>(vec.data()), dim_ * sizeof(float));
+            
+            if (!ifs.good()) return false;
+            all_vectors_[label] = std::move(vec);
+        }
+        
+        dirty_ = false;
+        return true;
+    }
+    
+    void addPoint(labeltype label, const float* data) {
+        if (storage_mode_ == VectorStorageMode::DISABLED) return;
+        
+        all_vectors_[label] = std::vector<float>(data, data + dim_);
+        dirty_ = true;
+    }
+    
+    const float* get_vector(labeltype label) const {
+        auto it = all_vectors_.find(label);
+        return (it != all_vectors_.end()) ? it->second.data() : nullptr;
+    }
+    
+    // Save when needed - this is when we'd use mmap strategy on reload
+    bool save_vectors(const std::string& filename) {
+        if (!dirty_) return true;
+        
+        // Write all vectors
+        std::ofstream ofs(filename, std::ios::binary);
+        for (const auto& [label, vec] : all_vectors_) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+        
+        dirty_ = false;
+        return ofs.good();
+    }
+};
+
+// Strategy 3: Pre-allocate space for growth
+class PreallocatedVectorStorage {
+private:
+    void* mmap_ptr_ = nullptr;
+    size_t mmap_size_ = 0;
+    size_t used_size_ = 0;
+    size_t capacity_ = 0;  // Total allocated space
+    
+    std::unordered_map<labeltype, size_t> label_to_offset_;
+    
+public:
+    // Load with extra capacity
+    bool load_vectors_with_capacity(const std::string& filename, 
+                                     std::ifstream& ifs,
+                                     size_t num_vectors,
+                                     float growth_factor = 1.5) {
+        vectors_file_offset_ = ifs.tellg();
+        
+        size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
+        used_size_ = num_vectors * entry_size;
+        capacity_ = used_size_ * growth_factor;  // Pre-allocate extra space
+        
+        // Read existing vectors
+        for (size_t i = 0; i < num_vectors; i++) {
+            labeltype label;
+            ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
+            label_to_offset_[label] = i * entry_size;
+            ifs.seekg(dim_ * sizeof(float), std::ios::cur);
+        }
+        
+        // Expand file to capacity
+        std::ofstream ofs(filename, std::ios::binary | std::ios::in | std::ios::ate);
+        ofs.seekp(vectors_file_offset_ + capacity_);
+        char zero = 0;
+        ofs.write(&zero, 1);
+        ofs.close();
+        
+        // Now mmap the expanded file
+        return setup_mmap_with_write(filename);
+    }
+    
+    bool setup_mmap_with_write(const std::string& filename) {
+        #ifndef _WIN32
+        mmap_fd_ = open(filename.c_str(), O_RDWR);  // Note: O_RDWR for write
+        if (mmap_fd_ == -1) return false;
+        
+        // Map with write permissions
+        mmap_ptr_ = mmap(nullptr, capacity_, PROT_READ | PROT_WRITE, 
+                        MAP_SHARED, mmap_fd_, vectors_file_offset_);
+        
+        if (mmap_ptr_ == MAP_FAILED) {
+            close(mmap_fd_);
+            return false;
+        }
+        
+        mmap_size_ = capacity_;
+        return true;
+        #else
+        // Windows equivalent with PAGE_READWRITE
+        #endif
+    }
+    
+    bool addPoint(labeltype label, const float* data) {
+        size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
+        
+        // Check if we have space
+        if (used_size_ + entry_size > capacity_) {
+            return false;  // Need to remap with more space
+        }
+        
+        // Write directly to mmap'd region
+        char* write_ptr = static_cast<char*>(mmap_ptr_) + used_size_;
+        memcpy(write_ptr, &label, sizeof(labeltype));
+        memcpy(write_ptr + sizeof(labeltype), data, dim_ * sizeof(float));
+        
+        label_to_offset_[label] = used_size_;
+        used_size_ += entry_size;
+        
+        // Ensure changes are flushed
+        msync(write_ptr, entry_size, MS_ASYNC);
+        
+        return true;
+    }
+};
+
+// Strategy 4: Separate files for additions (recommended for large-scale)
+class MultiFileVectorStorage {
+private:
+    std::string base_filename_;
+    
+    // Main file (mmap'd, read-only)
+    void* main_mmap_ptr_ = nullptr;
+    std::unordered_map<labeltype, size_t> main_offsets_;
+    
+    // Delta files (in-memory)
+    std::vector<std::string> delta_files_;
+    std::unordered_map<labeltype, std::vector<float>> delta_vectors_;
+    
+public:
+    void addPoint(labeltype label, const float* data) {
+        // Add to in-memory delta
+        delta_vectors_[label] = std::vector<float>(data, data + dim_);
+        
+        // Periodically flush delta to separate file
+        if (delta_vectors_.size() >= DELTA_THRESHOLD) {
+            flush_delta();
+        }
+    }
+    
+    void flush_delta() {
+        if (delta_vectors_.empty()) return;
+        
+        std::string delta_file = base_filename_ + ".delta" + std::to_string(delta_files_.size());
+        std::ofstream ofs(delta_file, std::ios::binary);
+        
+        for (const auto& [label, vec] : delta_vectors_) {
+            ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
+            ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
+        }
+        
+        delta_files_.push_back(delta_file);
+        delta_vectors_.clear();
+    }
+    
+    const float* get_vector(labeltype label) const {
+        // Check delta first (most recent)
+        auto it = delta_vectors_.find(label);
+        if (it != delta_vectors_.end()) {
+            return it->second.data();
+        }
+        
+        // Check main mmap
+        auto mit = main_offsets_.find(label);
+        if (mit != main_offsets_.end()) {
+            return reinterpret_cast<const float*>(
+                static_cast<char*>(main_mmap_ptr_) + mit->second + sizeof(labeltype)
+            );
+        }
+        
+        return nullptr;
+    }
+    
+    // Compact all deltas back into main file
+    void compact() {
+        // Unmap main file
+        // Read all data + deltas
+        // Write consolidated file
+        // Remap
+    }
+};
+
+// Recommendation based on use case:
+/*
+Strategy 1 (Hybrid): Best for moderate additions, simple to implement
+Strategy 2 (Delayed Write): Best when you modify everything in batch
+Strategy 3 (Preallocated): Good if you know max size, complex implementation
+Strategy 4 (Multi-file): Best for continuous additions at scale, LSM-tree style
+*/
