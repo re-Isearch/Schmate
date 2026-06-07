@@ -114,6 +114,9 @@ std::vector<std::string> splitPath(const std::string& pathStr, char delimiter =
 // Generic path search function that returns path and extracted data
 // Return type includes the path and custom data
 // NOTE: Must be inline or fully defined in header when used with lambdas
+
+std::filesystem::path resolvePath(std::string_view input) ;
+
 template<typename T, typename Predicate>
 inline std::optional<std::pair<std::filesystem::path, T>> findInPathsWithData(
     const std::string& filename,
@@ -132,8 +135,9 @@ inline std::optional<std::pair<std::filesystem::path, T>> findInPathsWithData(
     
     auto paths = splitPath(searchPaths);
     
-    for (const auto& directory : paths) {
+    for (const auto& dir : paths) {
         try {
+	    auto directory = resolvePath(dir);
             if (!std::filesystem::exists(directory) || !std::filesystem::is_directory(directory)) {
                 continue;
             }

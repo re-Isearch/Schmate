@@ -44,9 +44,18 @@ static const char default_model[] = "sbert.gguf";
 static const char default_model[] = "sbert.ggml";
 #endif
 
+#if defined(__APPLE__) && defined(__MACH__)
+    #include <TargetConditionals.h>
+    #if TARGET_OS_MAC == 1 && TARGET_OS_IPHONE == 0
+        #define PLATFORM_MODELS_PATH "/Users/Shared/Models/gguf/:$(GGUF_PATH):~/.ib/models"
+    #endif
+#elif defined(__linux__)
+    #define PLATFORM_MODELS_PATH "/opt/models/gguf/:$(GGUF_PATH):~/.ib/models"
+#else
+    #define PLATFORM_MODELS_PATH "$(GGUF_PATH)"
+#endif
 
-static const char search_path[] = "/opt/nonmonotonic/schmate/etc:/usr/local/ib/etc:~/.ib/models:../lib:.";
-
+static const char search_path[] = PLATFORM_MODELS_PATH;
 
 #ifdef DEBUG
 
@@ -140,7 +149,7 @@ EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, bool searchOnly) : Parent(Pa
    // Need to search since this logic is part of the factory above..
    auto found = find_model(model, search_path);
    if (found.second == GGML_TYPE::UNKNOWN) {
-     message_log (LOG_ERROR, "GGML model '%s' not resolved", model.c_str()); 
+     message_log (LOG_ERROR, "GGML model '%s' not resolved in %s", model.c_str(), search_path); 
      return;
    } 
 #if BERT_API_VERSION == 2

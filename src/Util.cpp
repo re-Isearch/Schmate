@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <array>
 
+#include <pwd.h>
+
 using namespace hnswlib;
 
 /*
@@ -285,7 +287,7 @@ static GGML_TYPE FileType(const std::string& filepath) {
                         magic == GGLA_MAGIC || magic == GGMF_MAGIC ||
                         magic == GGUF_MAGIC);
      if (!valid_magic) {
-        std::cerr << "Invalid magic number: 0x" << std::hex << magic << std::dec << std::endl;
+	// std::cerr << "Invalid magic number: 0x" << std::hex << magic << std::dec << std::endl;
         return type ;
      }
    type = ( magic == GGUF_MAGIC) ? GGML_TYPE::GGUF : GGML_TYPE::GGML;
@@ -611,5 +613,96 @@ std::pair<hnswlib::StorageType, std::string>
     }
 }
     
+
+inline std::string expandTilde(std::string path)
+{
+    if (path.empty() || path[0] != '~')
+        return path;
+
+    auto slash = path.find('/');
+
+    // ~ or ~/...
+    if (slash == 1 || slash == std::string::npos)
+    {
+        const char *home = getenv("HOME");
+
+        if (!home)
+        {
+            if (auto *pw = getpwuid(getuid()))
+                home = pw->pw_dir;
+        }
+
+        if (!home)
+            return path;
+
+        if (slash == std::string::npos)
+            return home;
+
+        return std::string(home) + path.substr(1);
+    }
+
+    // ~user or ~user/...
+    std::string user = path.substr(1, slash - 1);
+
+    if (auto *pw = getpwnam(user.c_str()))
+    {
+        if (slash == std::string::npos)
+            return pw->pw_dir;
+
+        return std::string(pw->pw_dir) + path.substr(slash);
+    }
+
+    return path;
+}
+
+
+#include <regex>
+
+inline std::string expandEnvironment(std::string path)
+{
+    static const std::regex re(
+        R"(\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))");
+
+    std::string result;
+    std::smatch match;
+
+    while (std::regex_search(path, match, re))
+    {
+        result += match.prefix();
+
+        std::string var =
+            match[1].matched ? match[1].str() : match[2].str();
+
+        if (const char *value = getenv(var.c_str()))
+            result += value;
+
+        path = match.suffix();
+    }
+
+    result += path;
+
+    return result;
+}
+
+std::filesystem::path resolvePath(std::string_view input)
+{
+    std::string path(input);
+
+    // Expand ~ and ~user
+    path = expandTilde(path);
+
+    // Expand $VAR and ${VAR}
+    path = expandEnvironment(path);
+
+    std::error_code ec;
+
+    auto p = std::filesystem::path(path);
+
+    if (std::filesystem::exists(p, ec))
+        return std::filesystem::weakly_canonical(p, ec);
+
+    return p.lexically_normal();
+}
+
 
 
