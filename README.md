@@ -64,11 +64,59 @@ It may be used both inside *re-Isearch* but also without. It has been designed t
 Hierarchical Navigable Small World (HNSW) is a graph-based algorithm used in vector databases to find similar items in
 high-dimensional datasets. Originally published in 2016 [Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs](https://arxiv.org/abs/1603.09320) by Yury Malkov, his C++ implementation is not only reference but widely regarded as one of the most performant.
 
-Stating with Malkov's HNSWlib as a basis we significantly enhanced (adding among other features quantized spaces) and turbo-charged (including support for x86 and ARM SIMD) it while also adding efficient mmap-backed re-scoring and offset storage for text retrieval. Our system supports sharded HNSW indices, multiple search modes (kNN, radius, relative, adaptive, epsilon), deletion/undelete, merges, and incremental on-disk flushing. It also includes training for hyperparameter optimization.
+Starting with Malkov's HNSWlib as a basis we significantly enhanced (adding among other features quantized spaces) and turbo-charged (including support for x86 and ARM SIMD) it while also adding efficient mmap-backed re-scoring and offset storage for text retrieval. Our system supports sharded HNSW indices, multiple search modes (kNN, radius, relative, adaptive, epsilon), deletion/undelete, merges, and incremental on-disk flushing. It also includes training for hyperparameter optimization.
 
 All code is implemented in modern C++17, optimized for macOS and Linux.
 
 ## SBERT: bert.cpp, llama.cpp and the ggml tensor library
+<PRE>
+┌──────────────────────────────────────────────────────────────┐
+│                    Schmate Application                       │
+│                                                              │
+│  EmbedderFactory • BaseEmbedder • Indexing • Search          │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────┐
+        │      Embedding Frameworks     │
+        └───────────────┬───────────────┘
+                        │
+        ┌───────────────┴───────────────┐
+        │                               │
+        ▼                               ▼
+┌───────────────────┐       ┌───────────────────────┐
+│     bert.cpp      │       │      llama.cpp        │
+│                   │       │                       │
+│ BERT embeddings   │       │ Modern embedding      │
+│ Sentence models   │       │ and LLM models        │
+└─────────┬─────────┘       └───────────┬───────────┘
+          │                             │
+          └──────────────┬──────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│                           GGML                               │
+│--------------------------------------------------------------│
+│ Tensor operations                                            │
+│ Graph execution                                              │
+│ Memory management                                            │
+│ Quantization                                                 │
+│ CPU/GPU abstraction                                          │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│                     GGML Backend Layer                       │
+├──────────────────────────────────────────────────────────────┤
+│ CPU                                                          │
+│ Accelerate (Apple)                                           │
+│ Metal                                                        │
+│ CUDA                                                         │
+│ Vulkan                                                       │
+│ OpenCL                                                       │
+│ SYCL                                                         │
+│ HIP / ROCm                                                   │
+└──────────────────────────────────────────────────────────────┘ </PRE>
 
 Behind our embeddings is our fork of bert.cpp and the mainlined llama.cpp. Behind these is the GGML tensor library.  Unlike mainstream vendor libraries (like PyTorch, TensorFlow, or TensorRT) built for data-center GPUs, GGML runs large transformer models efficiently on commodity hardware.
 
