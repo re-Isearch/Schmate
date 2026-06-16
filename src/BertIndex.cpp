@@ -270,6 +270,8 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     if (cfg.ef_search) search_ctrl.set_ef(cfg.ef_search);
 
     UnifiedIndexMeta meta(emb.embedding_dim(), cfg);
+    meta.setIdentifer(emb.model_name()); 
+
 
     LOG_DEBUG_S() << "BertIndex: Storage is " <<  storage_type_to_string(meta.storage_type_) << "\n";
     LOG_DEBUG_S() << "BertIndex: Quantization is " << quantization_to_string(meta.quantization_) << "\n";
@@ -380,11 +382,7 @@ void BertIndex::clear() {
 
 BertIndex::~BertIndex() {
     search_ctrl.save(name);
-#if USE_FILE_IO 
-    if (sentences_fd) ::fclose(sentences_fd);
-#else 
     close_sentences();
-#endif
     try {
         flush(); // persist any unsaved changes
         remove_lockfile(); // We ignore if it fails since it is probably 0 from another process
@@ -743,6 +741,31 @@ bool BertIndex::remove_lockfile() const {
    return true;
 }
 
+// In BertIndex — batch-encodes with prefix, parallel to encode_text()
+std::vector<std::vector<float>>
+BertIndex::encode_texts(const std::vector<std::string>& texts, bool search)
+{
+    const char *prefix = embedding_prefix(model_profile.model_class, search);
+
+    if (prefix == nullptr) {
+        // No prefix needed — pass directly to embedder batch
+        return embedder.encode_batch(texts);
+    }
+
+    // Prepend prefix to each text
+    bert_strings prefixed;
+    prefixed.reserve(texts.size());
+    size_t prefix_len = std::strlen(prefix);
+    for (const auto &t : texts) {
+        std::string p;
+        p.reserve(prefix_len + t.size());
+        p = prefix;
+        p += t;
+        prefixed.push_back(std::move(p));
+    }
+    return embedder.encode_batch(prefixed);
+}
+
 
 std::vector<float> BertIndex::encode_text(const std::string& text, bool search)
 {
@@ -792,6 +815,145 @@ std::vector<float> BertIndex::encode_text(const std::string& text, bool search)
 // vector MUST be the same as the dimension specified for the index. 
 // Should something else be desired we'd have to handle that in the ShardedIndex
 // class by creating a new shard with the appropriate dimension.  
+
+#if 1
+
+size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, uint32_t span)
+{
+    // std::cerr << "Append \"" << sentence << "\" span=" << span << std::endl;
+
+    if (cfg.lock_on_append && wait_lock()) {
+        LOG_FATAL_S() << "Can't append, other process competing (race).";
+        return 0;
+    }
+
+    if (span == 0) span = sentence.length();
+
+    bool insert_raw = false;
+    std::vector<Chunk> chunks;
+
+    // Detect pre-encoded vector pass-through (hex float32, base64, float array)
+    enum { _none, _float32, _base64, _arrays, _hex_int8, _hex_int4, _hex_binary } encoding;
+
+    if (schmate_util::isEncodedFloat32Vector(sentence, embedder.n_embd))
+        encoding = _float32;
+    else if (schmate_util::isBase64Float32Vector(sentence, embedder.n_embd))
+        encoding = _base64;
+    else if (schmate_util::isFloatArrayVector(sentence, embedder.n_embd))
+        encoding = _arrays;
+    else
+        encoding = _none;
+
+    if (encoding != _none) {
+        chunks.emplace_back(std::string(sentence.data(), sentence.size()), 0, sentence.size());
+        insert_raw = true;
+    } else {
+        chunks = chunk_tokens(sentence);
+    }
+
+    // Make sure sentence_id is monotonic
+    if (sentence_id > auto_sentence_id) auto_sentence_id = sentence_id;
+
+    // --- Phase 1: Batch-encode all plain-text chunks up front ---
+    // Only done for the non-raw path. Raw path decodes its own vectors per-chunk below.
+    std::vector<std::vector<float>> embeddings;
+    if (!insert_raw && !chunks.empty()) {
+        std::vector<std::string> texts;
+        texts.reserve(chunks.size());
+        for (const auto &chunk : chunks)
+            texts.push_back(chunk.text);
+        embeddings = encode_texts(texts, /*search=*/false);
+    }
+
+    size_t last_label = 0;
+
+    // --- Phase 2: Store chunks and insert into HNSW ---
+    for (size_t ci = 0; ci < chunks.size(); ++ci) {
+        auto &chunk = chunks[ci];
+
+        size_t label = allocate_label();
+
+        // --- Write sentence chunk to sentences store ---
+        int64_t file_start = sentences->append(chunk.text);
+        if (file_start < 0) {
+            // handle error
+        }
+        int64_t file_end = file_start + chunk.text.size();
+
+        if (file_start == -1 || file_end == -1)
+            LOG_ERROR_S() << "BAD Sentence address [" << file_start << "," << file_end << "]\n";
+
+        // --- Embed and insert into HNSW index ---
+        if (insert_raw) {
+            std::vector<float> emb;
+            switch (encoding) {
+                case _float32: emb = schmate_util::hexToFloat32(chunk.text);        break;
+                case _base64:  emb = schmate_util::base64ToFloat32(chunk.text);     break;
+                case _arrays:  emb = schmate_util::floatArrayToFloat32(chunk.text); break;
+                default: break;
+            }
+            index->addPoint(emb.data(), (hnswlib::labeltype)(label));
+        } else {
+            auto &emb = embeddings[ci];
+
+            if (emb.empty() || emb.data() == nullptr) {
+                LOG_ERROR_S() << "Safety Intercept: Engine generated a null vector for chunk: "
+                              << chunk.text;
+                return label; // Halt immediately instead of panicking the engine process
+            }
+
+            if (emb.size() != embedder.n_embd) {
+                LOG_ERROR_S() << "Dimension mismatch. Index expected " << embedder.n_embd
+                              << " but received " << emb.size();
+                return label;
+            }
+
+            index->addPoint(emb.data(), (hnswlib::labeltype)(label));
+        }
+
+        // --- Write OffsetEntry into mmap ---
+        OffsetEntry e{
+            sentence_id,
+            file_start,
+            file_end,
+            static_cast<uint32_t>(chunk.start_token),
+            static_cast<uint32_t>(chunk.end_token),
+            span
+        };
+
+        // std::cout << "Set label " << label << "\n";
+        offsets->set(label, e); // In-memory only: writes into mmap region directly
+
+        // Incremental durability: offset file always consistent on disk
+        // while deferring heavy I/O (HNSW saves) until necessary.
+        if (cfg.flush_offsets_each)
+            offsets->flush(label); // Syncs only 32 bytes (1 entry)
+
+        if (cfg.debug) {
+            LOG_DEBUG_S() << "append label=" << label
+                          << " sid=" << sentence_id
+                          << " tok=[" << chunk.start_token
+                          << "," << chunk.end_token << ")"
+                          << " file=[" << file_start
+                          << "," << file_end << ")";
+        }
+
+        last_label = label;
+    }
+
+    dirty_count++;
+    if (dirty_count >= cfg.flush_threshold) {
+        // dirty_count triggers index flush: used to throttle HNSW saves
+        flush();
+    }
+
+    return last_label; // return last label inserted for convenience
+}
+
+
+#else
+
+
 size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, uint32_t span) {
 
 // std::cerr << "Append \"" << sentence << "\"  span=" << span << std::endl;
@@ -865,21 +1027,11 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
         size_t label = allocate_label();
 
 //  std::cerr << "GOT A CHUNK = \"" << chunk.text << "\"" << std::endl;
-#if USE_FILE_IO
-        // --- Write sentence chunk to sentences file ---
-        // sentences_file.seekp(0, std::ios::end);
-	fseek(sentences_fd, 0, SEEK_END);
-	int64_t file_start = ftell(sentences_fd);
-	fwrite(chunk.text.data(), 1, chunk.text.size(), sentences_fd);
-	fflush(sentences_fd);
-	int64_t file_end = ftell(sentences_fd);
-#else /* NEW CODE */
         int64_t file_start = sentences->append(chunk.text);
 	if (file_start < 0) {
 	  // handle error
 	}
 	int64_t file_end = file_start + chunk.text.size();
-#endif
 	if (file_start == -1 || file_end == -1)
 	  LOG_ERROR_S() << "BAD Sentence address [" << file_start << "," << file_end << "]\n"; 
 
@@ -957,6 +1109,8 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
 
     return last_label; // return last label inserted for convenience
 }
+
+#endif
 
 
 // remove / undelete (unchanged except usage)
@@ -1104,11 +1258,7 @@ void BertIndex::flush() {
     if (!cfg.flush_offsets_each && offsets)
       offsets->flush(); // msync during add
 
-#if USE_FILE_IO
-    ::fflush(sentences_fd);
-#else /* NEW CODE */
     sentences->flush();
-#endif
 
     if (cfg.debug)  LOG_DEBUG_S() <<  "Flushed index + sentences to disk";
   } else if (size() == 0) {
@@ -1442,7 +1592,6 @@ TYPICAL USE CASES:
 
 ///
 // Reconstruct sentence
-#if 1
 std::string BertIndex::reconstruct_sentence(int64_t sid) const {
     auto entries = offsets->find_by_sid(sid);
     if (entries.empty()) return "";
@@ -1488,131 +1637,6 @@ std::string BertIndex::reconstruct_sentence(int64_t sid) const {
 }
 
 
-#else
-
-string BertIndex::reconstruct_sentence(int64_t sentence_id) const {
-#if 1
-    // Collect all chunks for this sentence
-    std::vector<std::pair<int, std::string>> parts;
-
-    for (auto &entry : chunk_sentence_map) {
-        size_t label = entry.first;
-        int64_t sid = entry.second;
-
-        if (sid != sentence_id) continue;
-
-        auto tok_it = chunk_token_map.find(label);
-        if (tok_it == chunk_token_map.end()) continue;
-
-        int start_tok = tok_it->second.first;
-        int end_tok   = tok_it->second.second;
-
-        std::string chunk = get_text_by_label(label);
-        if (chunk.empty()) continue; // skip deleted
-
-        parts.emplace_back(start_tok, chunk);
-    }
-
-    if (parts.empty()) return "";
-
-    // Sort chunks by starting token index
-    std::sort(parts.begin(), parts.end(),
-              [](auto &a, auto &b){ return a.first < b.first; });
-
-    // Concatenate
-    std::string result;
-    for (auto &p : parts) {
-        if (!result.empty()) result += " ";
-        result += p.second;
-    }
-    return result;
-
-#else
-    struct Piece {int ts, te; string text;};
-    vector<Piece> pcs;
-
-    for (auto &kv : chunk_sentence_map) {
-        if (kv.second != sentence_id) continue;
-        size_t label = kv.first;
-
-        fstream ofs(offsets_path, ios::in|ios::binary);
-        ofs.seekg(label*16);
-        int64_t s=read_int64(ofs), e=read_int64(ofs);
-        if (s==0 && e==0) continue;
-
-        ifstream sfs(sentences_path, ios::binary);
-        string text(e-s, '\0');
-        sfs.seekg(s); sfs.read(&text[0], e-s);
-
-        auto tok=chunk_token_map.find(label);
-        if (tok!=chunk_token_map.end())
-            pcs.push_back({tok->second.first,tok->second.second,text});
-    }
-
-    sort(pcs.begin(),pcs.end(),[](auto&a,auto&b){return a.ts<b.ts;});
-    string result;
-    int last=-1;
-    for (auto &p:pcs) {
-        if (!result.empty() && p.ts>=last) result+=' ';
-        result+=p.text;
-        last=max(last,p.te);
-    }
-    return result;
-#endif
-}
-#endif
-
-
-
-
-
-#if USE_FILE_IO
-// Debugging version (to solve core dump)
-std::string BertIndex::get_text_by_label(size_t label) const {
-    if (!offsets) {
-        throw std::runtime_error("OffsetFile not initialized");
-    }
-
-    OffsetEntry e = offsets->get(label);
-
-    // Defensive checks
-    if (e.sid == 0 && e.file_start == 0 && e.file_end == 0) {
-        if (cfg.debug) {
-             LOG_DEBUG_S() << "get_text_by_label(" << label << "): empty entry";
-        }
-        return "";
-    }
-    if (e.file_end <= e.file_start) {
-        if (cfg.debug) {
-             LOG_DEBUG_S() << "get_text_by_label(" << label << "): invalid offsets "
-                      << e.file_start << "->" << e.file_end;
-        }
-        return "";
-    }
-
-    size_t len = static_cast<size_t>(e.file_end - e.file_start);
-    if (len > 10'000'000) { // arbitrary sanity cap
-        if (cfg.debug) {
-             LOG_DEBUG_S() <<  "get_text_by_label(" << label << "): length too large " << len;
-        }
-        return "";
-    }
-
-    std::ifstream ifs(sentences_path, std::ios::binary);
-    if (!ifs) {
-        throw std::runtime_error("Failed to open sentences file: " + sentences_path);
-    }
-
-    ifs.seekg(e.file_start, std::ios::beg);
-    std::string text(len, '\0');
-    ifs.read(&text[0], len);
-
-    return text;
-}
-
-
-#else
-
 std::string BertIndex::get_text_by_label(size_t label) const {
     if (sentences) {
       // 1. Look up the metadata for this HNSW label
@@ -1626,7 +1650,6 @@ std::string BertIndex::get_text_by_label(size_t label) const {
     }
     return "";
 }
-#endif
 
 /* OLD CODE */
 /*
@@ -1812,31 +1835,6 @@ int BertIndex::unlink(const std::string &path)
     return errors;
 }
 
-#if USE_FILE_IO 
-
-bool BertIndex::open_sentences() {
-  if (sentences_path.empty()) return false; // No path!
-  if (sentences_fd) ::fclose(sentences_fd);
-
-  // Read/Write binary, append to end-of-file
-  sentences_fd = schmate_util::fopen_high(sentences_path.c_str(), "a+b");
-  if (!sentences_fd) {
-     // log_errno("Failed to open sentences file");
-     return false;
-  }
-  return true;
-}
-
-void BertIndex::close_sentences() {
-   if (sentences_fd) {
-       ::fflush(sentences_fd);
-       ::fclose(sentences_fd);
-       sentences_fd = nullptr;
-   }
-}
-
-#else /* NEW CODE */
-
 bool BertIndex::open_sentences() {
   if (sentences_path.empty()) return false; // No path!
   // The Factory decides which implementation to give us
@@ -1850,8 +1848,6 @@ bool BertIndex::open_sentences() {
 void BertIndex::close_sentences() {
   if (sentences) sentences->close();
 }
-
-#endif /* open_sentences */
 
 
 #if 0

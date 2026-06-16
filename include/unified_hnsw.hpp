@@ -184,8 +184,9 @@ friend class UnifiedIndex;
        enable_rescoring_= cfg.enable_rescoring();
        storage_type_    = cfg.storage_type();
        matryoshka_dim_  = cfg.matryoshka_dim;
-
        quantizer_fitted_= false;
+
+       setIdentifer(cfg.model_name);
 
        // cfg.print();
     }
@@ -217,6 +218,7 @@ friend class UnifiedIndex;
 	quantizer_fitted_ = other.quantizer_fitted_;
 	storage_type_ = other.storage_type_;
 	matryoshka_dim_ = other.matryoshka_dim_;
+
 	return *this;
     }
 
@@ -230,6 +232,10 @@ friend class UnifiedIndex;
 		matryoshka_dim_ == other.matryoshka_dim_ &&
 		strcmp(identifier_, other.identifier_) == 0;
     }
+
+   void setIdentifer (const std::string_view name) {
+     strncpy(identifier_, name.data(), sizeof(identifier_));
+   }
 
     bool save(std::ofstream &out) const {
 	if (!out.good()) return false;
@@ -284,7 +290,8 @@ friend class UnifiedIndex;
             if (identifier_[0] != '\0') 
 	       HNSWWARN << "Index Identifier '" << id << "' != '" << identifier_ << "'\n";
             strcpy(identifier_, id); // Need to install it..
-	}
+	} 
+std::cerr << "identifier_ = " << identifier_ << std::endl;
 
 	readBinaryPOD(input, metric_);
 	readBinaryPOD(input, dim_);

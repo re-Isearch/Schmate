@@ -204,6 +204,8 @@ private:
 
    void initialize_model_profile();
    std::vector<float> encode_text(const std::string& text, bool search = false);
+   // Batch version of above
+   std::vector<std::vector<float>> encode_texts(const std::vector<std::string>& texts, bool search = false);
 
    // convert raw hnsw distance to a score 
    float score_from_dist(float dist) const;
