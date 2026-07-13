@@ -1,4 +1,4 @@
 [submodule "data/lat_text_tesserae"]
     path = data/lat_text_tesserae
-    url = https://github.com
+    url = https://github.com/cltk/lat_text_tesserae.git)
 
