@@ -1,0 +1,4 @@
+[submodule "at_text_tesserae"]
+	path = data
+	url = git@github.com:cltk/lat_text_tesserae.git
+
