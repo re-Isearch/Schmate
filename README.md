@@ -1,4 +1,10 @@
-# Vector search using HNSW and Sentence Transformers
+# Project Schmate (שמאטע) for re-Isearch (CoreQuarry)
+
+This is the module for Vector search using HNSW and Sentence Transformers
+designed to be as part of CoreQuarry (<https://corequarry.com>)
+**BUT** also to be used on its own without any dependency on the IB engine.
+It has been designed to be used in a host of other applications.
+
 
 **Semantic search with SBERT + GGML Tensor Library + HNSWlib.**
 
@@ -10,9 +16,16 @@ This system provides a sentence-embedding search engine built on:
 - Memory-mapped offset files for persistent, efficient text–embedding linkage
 - Automatic sharding, flushing, and adaptive thresholding
 
-Not only is it probably the most performat vector text engine currently available for use on local hardware  but also most likely the fullest featured. Its also 100% open source (Apache 2.0) "*no strings attached*".
+Not only does it include probably the most performat vector text engine currently available for use on local hardware  but also most likely the fullest featured. Its also 100% open source (Apache 2.0) "*no strings attached*".
 
-It may be used both inside *re-Isearch* but also without. It has been designed to be used in a host of other applications. 
+We are developing and benchmarking using the M1 as a baseline upon which to base performance expectations. Instead of demanding the latest and greatest (or an array of H300s) our design goals and constraints are to provide useful performance on literally "the smallest machine possible"— and not to demand some hyperscalar cluster.
+
+Our HNSWlib fork we have benchmarked as much as 13k QPS (768d vectors). Even limiting to a single thread we've clocked a max of 3000 QPS (versus for comparison 600 QPS for FAISS's HNSW implementaton).
+
+For vectorization Our test M1-Pro chews through roughly 45 passages per second per instance (3484 tok/s÷78 ms). That means one can expect to process 2,700 fully dense semantic records per minute on a baseline Apple Silicon chip.  Our tests on M3Pro and M4Pro showed even significantly higher throughputs (80k tokens/s or as much as 20x).
+
+As mentioned we support also Vukan and CUDA.  As a reference machine for CUDA we’ve chosen the  NVIDIA Jetson AGX Orin. It is an edge AI module delivering up to 275 TOPS of performance. It features configurable power consumption ranging from 15W to 75W depending on the model, and comes in 32GB and 64GBSystem-on-Module (SOM) configurations.
+On that platform we've clocked as much as 2x the performance of the M1Pro.
 
 ## Functional Organization<PRE>
                     ┌─────────────────┐
