@@ -16,7 +16,6 @@
 
 #define NEW_BERT_API 1
 
-
 struct SBertGGML : public BaseEmbedder {
     bert_ctx * ctx = nullptr;
     int n_embd = 0;
@@ -38,7 +37,14 @@ struct SBertGGML : public BaseEmbedder {
 
 #if NEW_BERT_API
   std::vector<float> encode_text(const std::string & text, bool debug=false) override {
-    if (text.empty()) return std::vector<float>(n_embd, 0.0f);
+    if (text.empty()) {
+        LOG_WARN_S() << "SBertGGML: encode_text called with empty text";
+	return std::vector<float>(n_embd, 0.0f);
+    }
+    if (ctx == nullptr) {
+        LOG_ERROR_S() << "SBertGGML: no model loaded; expected an encoded vector (raw)";
+        return std::vector<float>(n_embd, 0.0f);
+    }
 
     // This ensures only one thread uses the ggml backend at a time
     std::lock_guard<std::mutex> lock(encode_mutex);

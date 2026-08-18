@@ -18,7 +18,12 @@ option(USE_THREADPOOL "Use cached thread pool for parallel_search" OFF)
 # ====================================================================
 if(APPLE)
     # Force BOTH libraries to see the exact same struct fields
-    add_compile_definitions(GGML_USE_METAL=1)
+    # GGML_USE_METAL must track GGML_METAL: defining it while the Metal
+    # backend is disabled leaves bert_choose_backends() calling
+    # ggml_backend_metal_init(), which is then never linked.
+    if(GGML_METAL)
+      add_compile_definitions(GGML_USE_METAL=1)
+    endif()
     add_compile_definitions(GGML_USE_ACCELERATE=1)
     
     # Ensure optimization matching prevents memory reordering bugs

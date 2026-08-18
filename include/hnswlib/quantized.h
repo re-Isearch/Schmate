@@ -1,5 +1,8 @@
 #pragma once
 
+#include <optional>
+#include <cstdint>
+
 namespace hnswlib {
 
 enum class QuantMode {

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <stdexcept>
+#include <optional>
 
 
 // ========= Read and Write ===================================== //

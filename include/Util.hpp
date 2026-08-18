@@ -4,6 +4,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <filesystem>
+#include <optional>
 
 #include "hnswlib/int_storage.h"
 #include "Logger.hpp"
