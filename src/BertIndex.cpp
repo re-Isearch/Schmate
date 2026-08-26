@@ -11,6 +11,7 @@
 
 #include <sstream>
 #include <chrono>
+#include <algorithm>
 
 
 using namespace std;
@@ -21,6 +22,13 @@ using namespace hnswlib;
 // and load the graphs to a stream.
 #define HNSW_META 1 /* THIS USES OUR MODIFIED HNSWlib !! */
 
+
+// Vector is just 0s
+bool is_zero_vector(const std::vector<float>& v)
+{
+  return std::all_of(v.begin(), v.end(),
+      [](float x) { return x == 0.0f; });
+}
 
 // Check if valid query
 // ============================================================================
@@ -794,6 +802,8 @@ std::vector<float> BertIndex::encode_text(const std::string& text, bool search)
     	std::cerr << " -> STATUS:  PERFECTLY NORMALIZED! (Out-of-the-box IP is safe)\n\n";
 	}
 #endif
+      if (vec.empty() || is_zero_vector(vec))
+        return {};
       return vec;
     }
 
@@ -896,18 +906,18 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
         } else {
             auto &emb = embeddings[ci];
 
-            if (emb.empty() || emb.data() == nullptr) {
-                LOG_ERROR_S() << "Safety Intercept: Engine generated a null vector for chunk: "
-                              << chunk.text;
-                return label; // Halt immediately instead of panicking the engine process
+            if (emb.empty()) {
+	      LOG_ERROR_S() << "Safety Intercept: Engine generated an empty vector for chunk: " << chunk.text;
+	      return label;
+	    }
+	    if (emb.size() != embedder.n_embd) {
+              LOG_ERROR_S() << "Dimension mismatch. Index expected " << embedder.n_embd << " but received " << emb.size();
+	      return label;
+            if (is_zero_vector(emb)) {
+              LOG_ERROR_S() << "Safety Intercept: Engine generated an invalid vector for chunk: " << chunk.text;
+	      return label;
             }
-
-            if (emb.size() != embedder.n_embd) {
-                LOG_ERROR_S() << "Dimension mismatch. Index expected " << embedder.n_embd
-                              << " but received " << emb.size();
-                return label;
-            }
-
+	    // OK: Add point
             index->addPoint(emb.data(), (hnswlib::labeltype)(label));
         }
 
@@ -947,6 +957,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
         flush();
     }
 
+   } // for
     return last_label; // return last label inserted for convenience
 }
 
@@ -1117,7 +1128,8 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
 #if 1
 
 
-std::vector<size_t> BertIndex::find_labels_by_sid(int64_t sid) const {
+std::vector<size_t> BertIndex::find_labels_by_sid(int64_t sid) const
+{
   return offsets->find_labels_by_sid(sid);
 }
 

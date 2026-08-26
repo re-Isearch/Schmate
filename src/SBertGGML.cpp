@@ -239,6 +239,23 @@ extern "C" {
 };
 #endif
 
+#if 1
+
+/*
+  No internal embedder.  No text-to-vector conversion.
+  Index dimension comes from configuration/index metadata.
+  Every inserted vector must match that dimension.
+  Every search vector must match that dimension.
+*/
+SBertGGML::SBertGGML(size_t dimension) : n_embd(dimension) {
+#if defined(BERT_API_VERSION) &&   (BERT_API_VERSION > 1)
+    name = "";
+#endif
+    arch = "_encoded";
+    LOG_INFO_S() << "By-pass Models to handle encoded vectors dim=" << n_embd ;
+}
+#endif
+
 SBertGGML::SBertGGML(const std::string & model_path, size_t threads) : _threads(threads) {
 #ifdef __APPLE__
    relax_macos_malloc_zones();

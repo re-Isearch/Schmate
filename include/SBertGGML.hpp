@@ -22,6 +22,7 @@ struct SBertGGML : public BaseEmbedder {
     std::string name;
     std::string arch;
 
+    SBertGGML(size_t Dimension);
     SBertGGML(const std::string & model_path, size_t threads = 4);
 
     std::string_view model_architecture() const override { return arch; }

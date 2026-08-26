@@ -589,4 +589,7 @@ inline bool couldBeFloatArray(const std::string_view str)
   return c == '[' || c == '-' || c == '+' || isdigit((unsigned char)c);
 }
 
+// The dimension of a string
+size_t Float32VectorDimension(std::string_view value);
+
 } // namespace schmate_util

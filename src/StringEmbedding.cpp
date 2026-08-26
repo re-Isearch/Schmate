@@ -371,5 +371,148 @@ std::vector<float> floatArrayToFloat32(const std::string& str)
 }
 
 
+static inline bool IsKnownEmbeddingDimension(size_t d)
+{
+  switch (d)
+    {
+      case 384:
+      case 512:
+      case 768:
+      case 1024:
+      case 1536:
+      case 2048:
+      case 3072:
+        return true;
+
+      default:
+        return false;
+    }
+}
+
+
+//
+// Determine decoded Base64 byte count without decoding.
+//
+static size_t Base64DecodedBytes(std::string_view s)
+{
+  const size_t n = s.size();
+
+  if (n == 0)
+    return 0;
+
+  size_t padding = 0;
+
+  if (s[n - 1] == '=')
+    {
+      padding++;
+
+      if (n > 1 && s[n - 2] == '=')
+        padding++;
+    }
+
+  if (padding)
+    {
+      //
+      // Padded Base64 must be a multiple of four.
+      //
+      if ((n & 3) != 0)
+        return 0;
+
+      return (n / 4) * 3 - padding;
+    }
+
+  //
+  // Also permit unpadded Base64.
+  //
+  switch (n & 3)
+    {
+      case 0:
+        return (n / 4) * 3;
+
+      case 2:
+        return (n / 4) * 3 + 1;
+
+      case 3:
+        return (n / 4) * 3 + 2;
+
+      default:
+        return 0;       // remainder 1 is invalid Base64
+    }
+}
+
+
+size_t Float32VectorDimension(std::string_view value)
+{
+  const size_t len = value.size();
+
+  if (len == 0)
+    return 0;
+
+
+  //
+  // Hex encoded FP32:
+  //
+  //   4 bytes / float
+  //   2 hex chars / byte
+  //   => 8 chars / dimension
+  //
+  if ((len & 7) == 0)
+    {
+      const size_t dimension = len / 8;
+
+      if (IsKnownEmbeddingDimension(dimension) &&
+          isEncodedFloat32Vector(value, dimension))
+        return dimension;
+    }
+
+
+  //
+  // Base64 encoded FP32.
+  //
+  const size_t bytes = Base64DecodedBytes(value);
+
+  if (bytes && (bytes & 3) == 0)
+    {
+      const size_t dimension = bytes / sizeof(float);
+
+      if (IsKnownEmbeddingDimension(dimension) &&
+          isBase64Float32Vector(value, dimension))
+        return dimension;
+    }
+
+
+  //
+  // Float array representation.
+  //
+  // Count first, then use the existing validator to confirm it.
+  //
+  if (value.size() >= 2 && value.front() == '[' && value.back() == ']')
+    {
+      size_t dimension = 0;
+      bool have_value = false;
+
+      for (char c : value)
+        {
+          if (c == ',')
+            dimension++;
+          else if (c != '[' && c != ']' &&
+                   c != ' ' && c != '\t' &&
+                   c != '\r' && c != '\n')
+            have_value = true;
+        }
+
+      if (have_value)
+        dimension++;          // commas + 1
+
+      if (IsKnownEmbeddingDimension(dimension) &&
+          isFloatArrayVector(value, dimension))
+        return dimension;
+    }
+
+
+  return 0;
+}
+
+
 
 } // namespace schmate_util

@@ -113,12 +113,32 @@ inline void printResults(const ResultVec &results, bool debug = false) {
 // DBs: A and B. DbA for modelA and DbB for modelB.
 // A search of the ensembed A+B would search both each with their own model..
 
-EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, bool searchOnly) : Parent(Parent_) {
+EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, size_t Dimension) : Parent(Parent_), dim (Dimension)
+{
+  // Dimension must be at least 384
+  embedder = std::make_unique<SBertGGML>(Dimension < 384 ? 384 : Dimension);
+  Parent->RevalidateFileCache(); // Work around should the libs have messed with handles!
+#if USE_LRUCACHE
+  // manager uses references to embedder? our manager takes embedder ref in constructor earlier.
+   size_t cache_size = embedder ? determine_optimal_hnsw_cache_size(*cfg, embedder->n_embd) : 0;
+   if (cfg->debug) LOG_DEBUG_S() << "Optimal Index Cache Size: " << cache_size;
+#endif
+   if (embedder-> ctx) {
+#if USE_LRUCACHE
+     manager = std::make_unique<BertIndexManager>(*embedder, *cfg, cache_size, false, Parent);
+#else
+     manager = std::make_unique<BertIndexManager>(*embedder, *cfg, searchOnly, Parent);
+#endif
+   }
+
+}
+
+EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, const STRING& Datatype, bool searchOnly) : Parent(Parent_) {
 
   Logger::instance().setPrefix( _globalMessageLogger.get_prefix()); 
 
   if (Parent) {
-    const char section[] = "Embedding";
+    const STRING section = Datatype.IsEmpty() ? STRING("Embedding") : Datatype;;
     STRING project_ = Parent->ProfileGetString(section, "project");
 
     ConfigLoader loader;
@@ -127,8 +147,10 @@ EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, bool searchOnly) : Parent(Pa
     std::string  model = cfg->model_name;
     if (model.empty()) {
         STRING model_   = Parent->ProfileGetString(section, "model");
-        if (model_.IsEmpty())
+        if (model_.IsEmpty()) {
            model = default_model; // Default Model
+	   message_log(LOG_INFO, "Using the default embedding model: \"%s\"", default_model);
+	}
         else model = model_.toStdString();
     }
 
@@ -177,6 +199,7 @@ EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, bool searchOnly) : Parent(Pa
 #endif
   }
  }
+  dim = embedder ? embedder->embedding_dim() : 0;
 }
 
 bool EmbeddingIndexer::Ok() const
@@ -307,7 +330,7 @@ PIRSET EmbeddingIndexer::search(const STRING &fieldname, const STRING &query)
 
     auto process_results = [&](const auto& results) -> size_t {
         MDTREC mdtrec;
-        FC     fc;
+        IRESULT::hit_type     fc;
         size_t deleted_count = 0;
 
         pirset->Clear();  // reuse the allocation
@@ -441,6 +464,20 @@ std::vector<SearchResult> EmbeddingIndexer::search(const std::string &filename, 
 EmbeddingIndexer::~EmbeddingIndexer() = default;
 
 
+const char * EmbeddingIndexer::Description()
+{
+  return "Embedding .ini Options:\n"
+" [HNSW | HNSW_2 | HNSW_3 | HNSW_RAW]\n"
+" project=<Schmate configuration>\n";
+}
+
+
+// Bridge store for re-Isearch.
+//
+// Unlike the standalone SentenceStore, this does NOT persist text.
+// OffsetEntry::sid is the IB GP start and sid + span is the GP end.
+// Passage text is retrieved directly from the IB engine via GetPeerContent().
+
 class ReIsearchSentenceStore : public SentenceStore {
 private:
     IDBOBJ* parent;
@@ -508,7 +545,6 @@ static void schmate_message_router(enum ggml_log_level level, const char * text,
 }
 
 #endif
-
 
 
 
