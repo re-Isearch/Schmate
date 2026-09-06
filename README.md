@@ -3,14 +3,14 @@
 ## Schmate Local Bare Metal/Edge Vector Database for Humans and Agents.
 
 While this project was originally concieved as a module to provide vector
-search using HNSW and Sentences transformers for the re-Isearch engine (CoreQuarry <https://corequarry.com>) it 
+search using HNSW and Sentence transformers for the re-Isearch engine (CoreQuarry <https://corequarry.com>) it 
 has evolved well beyond its original concept.
 
-Today it is a fully features high performance vector DB that can also be used on its own without any
+Today it is a fully featured high performance vector DB that can also be used on its own without any
 dependency on the IB engine.  This opens the library (and standalone tools like the CLI) to be  used in a host
 of other applications.
 
-Its function is a single sentence: **Semantic search with SBERT/LLAMA.CPP + GGML Tensor Library + HNSWlib on steroids.**
+Its function in a single sentence: **SOTA Semantic search with SBERT/LLAMA.CPP + GGML Tensor Library + HNSWlib on steroids.**
 
 This system provides a sentence-embedding search engine built on:
 - SBERT (Sentence-BERT) model running via the ggml tensor library (no Python dependency)
@@ -234,9 +234,9 @@ Our architecture maps internal GGUF metadata string lookups (general.name and ge
 
 ## Building
 
-Build is via the CMAKE build system. Pre-requisite (min) is the bert.cpp code in the 3rdParty folder (from the base directory of re-Isearch).  Since we support other bert.cpp and llama.cpp as well as their different ggml tensor libraries the default is to link from the build directory. This libschmate.dylib (MacOS) or libschmate.so (Linux) should then be copied into a suitable directory for linking. 
+Build is via the CMAKE build system. Pre-requisite (min) is the bert.cpp code in the 3rdParty folder (from the base directory of CoreQuarry).  Since we support other bert.cpp and llama.cpp as well as their different ggml tensor libraries the default is to link from the build directory. This libschmate.dylib (MacOS) or libschmate.so (Linux) should then be copied into a suitable directory for linking. 
 
-When building re-Isearch make sure that the VECTOR_INDEX is defined..
+When building IB (re-Isearch) make sure that the VECTOR_INDEX is defined..
 
 ## Quantization Algorithms supported (Added to HNSWlib)
 
@@ -276,7 +276,7 @@ By utilizing pass-through we dramatically reduce the memory footprint of high-di
 
 ## Pre-Quantized Models (GGUF) vs. Runtime Quantization
 
-When deploying embeddings within the re-Isearch ecosystem, you have two primary paths for handling high-dimensional data: leveraging pre-quantized GGUF/GGML models or using built-in quantization (like our MRLQ/RaBitQ stack) on raw FP32 output.
+When deploying embeddings within the CoreQuarry ecosystem, you have two primary paths for handling high-dimensional data: leveraging pre-quantized GGUF/GGML models or using built-in quantization (like our MRLQ/RaBitQ stack) on raw FP32 output.
 
 GGUF/GGML (GPT-Generated Unified Format) models often come pre-baked with quantization levels (e.g., Q4_K_M, Q8_0). Using these provides several distinct advantages:
 
@@ -323,7 +323,7 @@ Base64 — the most common standard
 
 
 Hexdecimal encoding (mainly niche uses)
-- re-Isearch pipeline — deliberate choice for human readability and fast validation.
+- IB (re-Isearch) pipeline — deliberate choice for human readability and fast validation.
 - Some other internal research pipelines — easier to eyeball and debug than base64
 - Faiss — when manually serializing index entries for debugging
 - GeoJSON — sometimes hex for geometry binary extensions (non-standard)
@@ -339,11 +339,11 @@ Many modern APIs just use JSON float arrays directly and avoid the binary encodi
 - Qdrant — float arrays in REST, binary in gRPC
 - Chroma — float arrays
 
-NOTE: re-Isearch now supports a number of JSON types include extended JSON (e.g. MongoDb).
+NOTE: IB (re-Isearch) now supports a number of JSON types include extended JSON (e.g. MongoDb).
 
-# Interface to re-Isearch
+# Schmate Interface to IB (re-Isearch)
 
-Interface code to re-Isearch is provided by the EmbeddingIndexer class.
+Interface code to IB (re-Isearch) is provided by the EmbeddingIndexer class.
 
 It provides the following 3 main methods to re-Isearch:
 1) <pre>inline bool Append(const STRING& buffer, const STRING &fieldname, const FC& fc)</pre>
