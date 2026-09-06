@@ -1,20 +1,24 @@
 # Project Schmate (שמאטע) for re-Isearch (CoreQuarry)
 
-This is the module for Vector search using HNSW and Sentence Transformers
-designed to be as part of CoreQuarry (<https://corequarry.com>)
-**BUT** also to be used on its own without any dependency on the IB engine.
-It has been designed to be used in a host of other applications.
+## Schmate Local Bare Metal/Edge Vector Database for Humans and Agents.
 
+While this project was originally concieved as a module to provide vector
+search using HNSW and Sentences transformers for the re-Isearch engine (CoreQuarry <https://corequarry.com>) it 
+has evolved well beyond its original concept.
 
-**Semantic search with SBERT + GGML Tensor Library + HNSWlib.**
+Today it is a fully features high performance vector DB that can also be used on its own without any
+dependency on the IB engine.  This opens the library (and standalone tools like the CLI) to be  used in a host
+of other applications.
 
-See tests/run_test.sh for usage.
+Its function is a single sentence: **Semantic search with SBERT/LLAMA.CPP + GGML Tensor Library + HNSWlib on steroids.**
 
 This system provides a sentence-embedding search engine built on:
 - SBERT (Sentence-BERT) model running via the ggml tensor library (no Python dependency)
 - HNSWlib for fast approximate nearest neighbor (ANN) retrieval
 - Memory-mapped offset files for persistent, efficient text–embedding linkage
+- A large range of state of the art quantization algorithms as well as optimized support for pre-quantised GGUF models.
 - Automatic sharding, flushing, and adaptive thresholding
+- A power set of tools and a CLI: See tests/run_test.sh for usage.
 
 Not only does it include probably the most performat vector text engine currently available for use on local hardware  but also most likely the fullest featured. Its also 100% open source (Apache 2.0) "*no strings attached*".
 
