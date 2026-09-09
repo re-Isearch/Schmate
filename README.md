@@ -10,6 +10,17 @@ Today it is a fully featured high performance vector DB that can also be used on
 dependency on the IB engine.  This opens the library (and standalone tools like the CLI) to be  used in a host
 of other applications.
 
+<PRE>
+Standalone Schmate
+    owns text / offsets / vectors / HNSW lifecycle
+    useful as an independent vector database
+
+Schmate + IB
+    IB owns the authoritative information
+    Schmate becomes a derived vector access layer
+    CoreQuarry supplies richer lexical/structural semantics
+</PRE>
+
 Its function in a single sentence: **SOTA Semantic search with SBERT/LLAMA.CPP + GGML Tensor Library + HNSWlib on steroids.**
 
 This system provides a sentence-embedding search engine built on:
