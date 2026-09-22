@@ -1284,14 +1284,12 @@ save();
 void BertIndex::save() {
 
 // Rewrites entire index: normally done in batches after X inserts
-cerr << "XXXXXXXXXXX SAVE INDEX" << endl;
   if (size() > 0) {
      if (index) index->saveIndex(index_path);
   } else if (file_size(index_path) >= 0) {
       // since != -1 we know it exists
       unlink(index_path.c_str());
   }
-else cerr << "SIZE = ZERO!!!!" << endl;
   dirty_count = 0; // Memory = disk
   if (cfg.debug)  LOG_DEBUG_S() << "saved index " << index_path;
   release_lock();
