@@ -913,6 +913,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
 	    if (emb.size() != embedder.n_embd) {
               LOG_ERROR_S() << "Dimension mismatch. Index expected " << embedder.n_embd << " but received " << emb.size();
 	      return label;
+	    } 
             if (is_zero_vector(emb)) {
               LOG_ERROR_S() << "Safety Intercept: Engine generated an invalid vector for chunk: " << chunk.text;
 	      return label;
@@ -957,7 +958,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
         flush();
     }
 
-   } // for
+   // } // for
     return last_label; // return last label inserted for convenience
 }
 
@@ -1263,6 +1264,8 @@ void BertIndex::undelete(size_t label) {
 
 void BertIndex::flush() {
  // Only need to flush when we have a diff with the HNSW on disk
+save();
+
   if (dirty_count) {
     save();
 
@@ -1281,12 +1284,14 @@ void BertIndex::flush() {
 void BertIndex::save() {
 
 // Rewrites entire index: normally done in batches after X inserts
+cerr << "XXXXXXXXXXX SAVE INDEX" << endl;
   if (size() > 0) {
      if (index) index->saveIndex(index_path);
   } else if (file_size(index_path) >= 0) {
       // since != -1 we know it exists
       unlink(index_path.c_str());
   }
+else cerr << "SIZE = ZERO!!!!" << endl;
   dirty_count = 0; // Memory = disk
   if (cfg.debug)  LOG_DEBUG_S() << "saved index " << index_path;
   release_lock();
