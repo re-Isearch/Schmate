@@ -145,6 +145,8 @@ endif()
 add_executable(sbert_search src/main.cpp)
 add_executable(config_editor utils/config_editor.cpp)
 add_executable(test_reconstruct tests/test_reconstruct.cpp)
+add_executable(vector_background utils/vector_background.cpp)
+target_link_libraries(vector_background PRIVATE sbert_core)
 
 # =========================
 # Link executables → shared lib

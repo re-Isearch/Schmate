@@ -275,26 +275,26 @@ const float* UnifiedIndex::getOriginalVector(labeltype label) const {
 */
 
 
-// Calculate the actual energy of this specific quantized query.
-static double calculate_query_energy(const uint8_t *quantized, size_t dim)
+// Query-only calibration is a positive affine transform of the fixed index
+// distance. Apply it after traversal so insertion and concurrent searches
+// never need a mutable query context in the shared Space.
+double UnifiedIndex::query_similarity_scale(const uint8_t* query) const
 {
-    // --- CALIBRATION ---
-    double energy = 0;
-    for (size_t i = 0; i < (dim + 1) / 2; ++i) {
-        uint8_t byte = quantized[i];
-        
-        // Extract signed nibbles (same logic as distance func)
-        int q0 = byte & 0x0F; if (q0 >= 8) q0 -= 16;
-        int q1 = byte >> 4;   if (q1 >= 8) q1 -= 16;
- 
-        energy += (q0 * q0);
-        if (2 * i + 1 < dim) {
-            energy += (q1 * q1);
-        }
-    }
-    return energy;
+    if (metric_ != Metric::Cosine && metric_ != Metric::IP) return 1.0;
+    const auto* space = dynamic_cast<const SpaceQuantizedIP<float>*>(space_.get());
+    if (!space || !space->supports_query_energy()) return 1.0;
+    const double energy = space->query_energy(query);
+    return std::isfinite(energy) && energy > 0.0 ?
+        SpaceQuantizedIP<float>::reference_energy / energy : 0.0;
 }
 
+static float normalize_query_distance(float distance, double scale)
+{
+    if (scale == 1.0) return distance;
+    // A zero-energy query supplies no semantic interaction.
+    if (scale == 0.0) return 1.0f;
+    return static_cast<float>(1.0 - scale * (1.0 - double(distance)));
+}
 
 
 std::vector<std::pair<float, labeltype>>
@@ -333,11 +333,12 @@ std::vector<std::pair<float, labeltype>>
     space_->quantize(query, quantized.data());
 
     // With PASS (pass-through we NEVER rescore)
-    if (!use_rescoring || bin_mode_ == OptBinMode::PASS) {
-        double energy = calculate_query_energy(quantized.data(), dim_);
-	LOG_INFO_S() << "Energy = " << energy << "\n"; 
-
-	return  index_->searchKnnCloserFirst(quantized.data(), k, isIdAllowed);
+    const double score_scale = query_similarity_scale(quantized.data());
+    if (!use_rescoring || !enable_rescoring_ || bin_mode_ == OptBinMode::PASS) {
+        auto results = index_->searchKnnCloserFirst(quantized.data(), k, isIdAllowed);
+        for (auto& result : results)
+            result.first = normalize_query_distance(result.first, score_scale);
+        return results;
     }
 
      // Get more candidates for rescoring
@@ -345,6 +346,8 @@ std::vector<std::pair<float, labeltype>>
      size_t num_candidates = std::min(rescore_factor, index_->getCurrentElementCount());
 
      auto candidates = index_->searchKnnCloserFirst(quantized.data(), num_candidates, isIdAllowed);
+     for (auto& candidate : candidates)
+         candidate.first = normalize_query_distance(candidate.first, score_scale);
 
      // Rescore using original vectors
      auto rescored = apply_rescoring(query, candidates);
@@ -380,15 +383,14 @@ std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn_interna
     quantized.resize(space_->get_data_size()); // was get_bytes_per_vector());
     space_->quantize(query, quantized.data());
 
-    if (!use_rescoring || !enable_rescoring_) {
-        double energy = calculate_query_energy(quantized.data(), dim_);
-
-        auto results = index_->searchKnn(quantized.data(), k);
+    const double score_scale = query_similarity_scale(quantized.data());
+    if (!use_rescoring || !enable_rescoring_ || bin_mode_ == OptBinMode::PASS) {
+        auto results = index_->searchKnn(quantized.data(), k, isIdAllowed);
         std::priority_queue<std::pair<float, labeltype>> converted;
         while (!results.empty()) {
             auto [dist, label] = results.top();
             results.pop();
-            converted.emplace(static_cast<float>(dist), label);
+            converted.emplace(normalize_query_distance(dist, score_scale), label);
         }
         return converted;
     }
@@ -396,7 +398,7 @@ std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn_interna
     size_t rescore_factor = std::max(size_t(3), k * 3);
     size_t num_candidates = std::min(rescore_factor, index_->getCurrentElementCount());
     
-    auto binary_results = index_->searchKnn(quantized.data(), num_candidates);
+    auto binary_results = index_->searchKnn(quantized.data(), num_candidates, isIdAllowed);
     
     std::vector<std::pair<float, labeltype>> rescored;
     while (!binary_results.empty()) {
@@ -409,7 +411,7 @@ std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn_interna
             float dist; 
             if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
                 float sim = hnswlib::cosine_similarity(query, data, dim_);
-                dist = -sim;
+                dist = 1.0f - sim;
             } else { 
                 dist = l2_distance(query, data, dim_);
             }
@@ -421,7 +423,7 @@ std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn_interna
             float dist;
             if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
                 float sim = hnswlib::cosine_similarity(query, original_vectors_[label].data(), dim_);
-                dist = -sim;
+                dist = 1.0f - sim;
             } else {
                 dist = l2_distance(query, original_vectors_[label].data(), dim_);
             }
@@ -457,7 +459,7 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::apply_rescoring(
             float true_dist;
             if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
                 float sim = hnswlib::cosine_similarity(query_ptr, vec_ptr, dim_);
-                true_dist = -sim;
+                true_dist = 1.0f - sim;
             } else {
                 true_dist = l2_distance(query_ptr, vec_ptr, dim_);
             }
@@ -525,13 +527,14 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
         
     } else {
         std::vector<uint8_t> quantized;
-        quantized.resize(space_->get_bytes_per_vector() );
+        quantized.resize(space_->get_data_size());
         space_->quantize(query_ptr, quantized.data());
+        const double score_scale = query_similarity_scale(quantized.data());
         
         size_t original_ef = index_->ef_;
         index_->setEf(max_cand);
         
-        auto candidates = index_->searchKnn(quantized.data(), max_cand);
+        auto candidates = index_->searchKnn(quantized.data(), max_cand, isIdAllowed);
         index_->setEf(original_ef);
         
         if (candidates.empty()) return results;
@@ -542,12 +545,12 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
         while (!candidates.empty()) {
             auto [dist, label] = candidates.top();
             candidates.pop();
-            float fdist = static_cast<float>(dist);
+            float fdist = normalize_query_distance(dist, score_scale);
             all_candidates.emplace_back(fdist, label);
             best_dist = std::min(best_dist, fdist);
         }
         
-        if (enable_rescoring_) {
+        if (enable_rescoring_ && bin_mode_ != OptBinMode::PASS) {
             std::vector<std::pair<float, labeltype>> rescored;
             for (const auto& [dist, label] : all_candidates) {
 #if 1
@@ -556,7 +559,7 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
                   float true_dist;
                     if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
                         float sim = hnswlib::cosine_similarity(query_ptr, data, dim_);
-                        true_dist = -sim;
+                        true_dist = 1.0f - sim;
                     } else {
                         true_dist = l2_distance(query_ptr, data, dim_);
                     } 
@@ -567,7 +570,7 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
                     float true_dist;
                     if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
                         float sim = hnswlib::cosine_similarity(query_ptr, original_vectors_[label].data(), dim_);
-                        true_dist = -sim;
+                        true_dist = 1.0f - sim;
                     } else {
                         true_dist = l2_distance(query_ptr, original_vectors_[label].data(), dim_);
                     }
@@ -1164,16 +1167,12 @@ float UnifiedIndex::score_from_dist(float dist) const {
             return 1.0f / (1.0f + dist);
 
         case Metric::Cosine:
+        case Metric::IP:
             // For cosine: distance = 1 - cosine_similarity
             // → similarity = 1 - distance
             // Clamp to [0,1] to avoid minor numeric drift.
             // return (std::clamp(1.0f - dist, 0.0f, 1.0f) + 1.0f)/2.0f;
-            return (2.0f - dist)/2.0f;
-
-        case Metric::IP:
-            // Inner product: higher = closer. HNSWlib may return negatives
-            // if embeddings aren't normalized. Clamp to [-1,1].
-            return std::clamp(dist, -1.0f, 1.0f);
+            return std::clamp((2.0f - dist)/2.0f, 0.0f, 1.0f);
 
         default:
             // Unknown metric

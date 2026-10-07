@@ -214,6 +214,7 @@ template<typename T=float>
 class SpaceQuantizedIP : public SpaceInterface<float> {
 public:
     using DISTFUNC_TYPE = DISTFUNC<float>;
+    static constexpr double reference_energy = 3932.0;
 
     size_t dim_;
     StorageType storage_type_;
@@ -222,11 +223,12 @@ public:
     size_t bytes_per_vector =0;
 
 
-    // Energy
+    // Legacy setter retained for source compatibility. Query calibration
+    // reads query_energy(query) locally and does not use this shared context.
     struct QuantizedContext {
        double query_energy; 
     };
-    QuantizedContext m_ctx_;
+    QuantizedContext m_ctx_{};
 
     bool set_energy(float value) override {
        m_ctx_.query_energy = (value > 100.0f) ? static_cast<double>(value) : 1000.0;
@@ -807,11 +809,9 @@ private:
 
 #if 1
 
-inline float finalize_dist(double acc, double energy = 3932.0f) const {
-    // For 384 dims at scale 100:
-    // Max theoretical acc is roughly 384 * (7*7) = 18816
-    // Expected acc for a match is ~10000
-    
+inline float finalize_dist(double acc, double energy = reference_energy) const {
+    // Keep the index metric fixed for insertion and traversal. Query energy
+    // calibrates returned scores in UnifiedIndex, without mutable space state.
     float dot = (float)(acc / energy) ; 
     
     return 1.0f - dot;
@@ -915,7 +915,7 @@ float finalize_dist(double acc) const {
 #endif
 
     // IP distance for pre-quantised vectors
-    float compute_dist_pass(int bits, const uint8_t* a, const uint8_t* b, size_t dim) const
+    double compute_inner_product_pass(int bits, const uint8_t* a, const uint8_t* b, size_t dim) const
     {
         double acc = 0.0;
 
@@ -924,7 +924,7 @@ float finalize_dist(double acc) const {
             for (size_t i = 0; i < dim; ++i) {
                 acc += int(int8_t(a[i])) * int(int8_t(b[i]));
             }
-            return finalize_dist(acc);
+            return acc;
         }
         // Fast path INT4
         if (bits == 4) {
@@ -943,7 +943,7 @@ float finalize_dist(double acc) const {
                     acc += a1 * b1;
                 }
             }
-            return finalize_dist(acc);
+            return acc;
         }
 
         // Generic bit-stream (INT1/2/3/5/6)
@@ -964,20 +964,49 @@ float finalize_dist(double acc) const {
             va &= mask;
             vb &= mask;
 
-            if (va & sign) va -= (1u << bits);
-            if (vb & sign) vb -= (1u << bits);
+            const int ia = (va & sign) ? int(va) - int(1u << bits) : int(va);
+            const int ib = (vb & sign) ? int(vb) - int(1u << bits) : int(vb);
 
-            acc += int(va) * int(vb);
+            acc += double(ia) * double(ib);
 
             bitpos += bits;
             bytepos += bitpos >> 3;
             bitpos &= 7;
         }
 
-        return finalize_dist(acc);
+        return acc;
+    }
+
+    float compute_dist_pass(int bits, const uint8_t* a, const uint8_t* b, size_t dim) const
+    {
+        return finalize_dist(compute_inner_product_pass(bits, a, b, dim));
+    }
+
+public:
+    bool supports_query_energy() const
+    {
+        if (bin_mode_ != OptBinMode::PASS) return false;
+        switch (storage_type_) {
+            case StorageType::INT2: case StorageType::INT3:
+            case StorageType::INT4: case StorageType::INT5:
+            case StorageType::INT6: case StorageType::INT8:
+            case StorageType::INT16:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    double query_energy(const uint8_t* query) const
+    {
+        // Reuse the signed dot-product decoder, including odd dimensions and
+        // packed components that cross byte boundaries.
+        return compute_inner_product_pass(IntStorage::bits_per_element(storage_type_),
+                                          query, query, dim_);
     }
 
 
+private:
     float compute_dist(const uint8_t* a, const uint8_t* b) const {
         float dot_product = 0;
 

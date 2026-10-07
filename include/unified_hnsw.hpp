@@ -431,6 +431,8 @@ private:
 
     void addPoint_internal(const float* data, labeltype label);
 
+    double query_similarity_scale(const uint8_t* query) const;
+
     std::priority_queue<std::pair<float, labeltype>> searchKnn_internal(
         const float* query, size_t k, BaseFilterFunctor* isIdAllowed, bool use_rescoring);
 

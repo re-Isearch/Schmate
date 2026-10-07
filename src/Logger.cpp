@@ -30,7 +30,7 @@ void Logger::enable_syslog(bool enabled) {
     log_to_syslog = enabled;
 #else
     if (enabled && !log_to_syslog) {
-        openlog(prefix_, LOG_PID | LOG_CONS, LOG_USER);
+        openlog(prefix_.c_str(), LOG_PID | LOG_CONS, LOG_USER);
         log_to_syslog = true;
     } else if (!enabled && log_to_syslog) {
         closelog();
@@ -46,7 +46,7 @@ void Logger::enable_file(const std::string_view filename) {
         file_stream.close();
     }
     
-    file_stream.open(filename, std::ios::app);
+    file_stream.open(std::string(filename), std::ios::app);
     if (file_stream.is_open()) {
         log_to_file = true;
     } else {

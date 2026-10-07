@@ -235,16 +235,12 @@ float BertIndex::score_from_dist(float dist) const {
             return 1.0f / (1.0f + dist);
 
         case Metric::Cosine:
+        case Metric::IP:
             // For cosine: distance = 1 - cosine_similarity
             // → similarity = 1 - distance
             // Clamp to [0,1] to avoid minor numeric drift.
 	    // return (std::clamp(1.0f - dist, 0.0f, 1.0f) + 1.0f)/2.0f;
-	    return (2.0f - dist)/2.0f;
-
-        case Metric::IP:
-            // Inner product: higher = closer. HNSWlib may return negatives
-            // if embeddings aren't normalized. Clamp to [-1,1].
-            return std::clamp(dist, -1.0f, 1.0f);
+	    return std::clamp((2.0f - dist)/2.0f, 0.0f, 1.0f);
 
         default:
             // Unknown metric

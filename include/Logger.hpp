@@ -8,6 +8,9 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <atomic>
+#include <cstring>
+#include <string_view>
 
 enum class LogLevel {
     DEBUG = 0,
