@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Options
 # =========================
 option(USE_THREADPOOL "Use cached thread pool for parallel_search" OFF)
+option(SCHMATE_BUILD_ENERGY_TESTS "Build focused vector and search regression tests" OFF)
 
 
 # ====================================================================
@@ -89,6 +90,19 @@ target_link_libraries(sbert_core
         bert   # <-- Link directly to the named target from add_subdirectory
         ggml   # <-- Link directly to the named target from add_subdirectory
 )
+
+if(SCHMATE_BUILD_ENERGY_TESTS)
+    enable_testing()
+    find_package(Threads REQUIRED)
+    foreach(test_name vector_energy vector_persistence search_energy)
+        add_executable(${test_name}_test tests/${test_name}.cpp)
+        target_link_libraries(${test_name}_test PRIVATE sbert_core Threads::Threads)
+        add_test(NAME ${test_name} COMMAND ${test_name}_test)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/${test_name}")
+        set_tests_properties(${test_name} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/${test_name}")
+    endforeach()
+endif()
 
 # =========================
 # SHARED LIB

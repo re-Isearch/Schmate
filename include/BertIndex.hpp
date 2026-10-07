@@ -189,6 +189,11 @@ public:
    int64_t append_from(BertIndex& source);
 
 private:
+   std::vector<std::pair<float, hnswlib::labeltype>> search_candidates(
+       const std::string& query, size_t max_k);
+   template<typename FilterFn>
+   std::vector<SearchResult> format_knn_results(
+       const std::vector<std::pair<float, hnswlib::labeltype>>& candidates, FilterFn filter);
    template<typename FilterFn>
    std::vector<SearchResult> filter_knn_results(const std::string &query,
         size_t max_k, FilterFn filter);
@@ -226,6 +231,5 @@ private:
 #endif
    bool searchOnly;
 };
-
 
 

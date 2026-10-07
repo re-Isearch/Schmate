@@ -43,9 +43,9 @@ public:
     /// Called after a kNN query completes.
     /// @param latency_ms measured time per query
     /// @param debug enable logs
-    void update_after_knn(float latency_ms, bool debug = false) {
+    void update_after_knn(double latency_ms, bool debug = false, size_t num_elements = 0) {
         if (adaptive_ef)
-            ef_tuner.update_after_query(latency_ms, debug);
+            ef_tuner.update_after_query(latency_ms, num_elements, debug);
     }
 
     /// Called after a radius (epsilon) query completes.
@@ -88,4 +88,3 @@ public:
                   << " (auto=" << adaptive_epsilon << ")\n";
     }
 };
-

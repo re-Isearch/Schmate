@@ -189,6 +189,7 @@ void UnifiedIndex::fit(const std::vector<std::vector<float>>& sample_embeddings)
     if (quantization_ != QuantMode::NONE) {
         space_->fit(sample_embeddings);
         quantizer_fitted_ = true;
+        ++changes_since_save_;
     }
 }
 
@@ -234,16 +235,16 @@ if (!index_) std::cerr << "INDEX IS NULL" << std::endl;
         original_vectors_[label] = std::vector<float>(data, data + dim_);
 #endif
     }
+    ++changes_since_save_;
     if (++additions_since_flush_ > flush_threshold_ )
       flush();
 }
 
 
 bool UnifiedIndex::flush() {
-   if (additions_since_flush_ == 0) return true;
-
-   // Could do something here ...
-
+   if (changes_since_save_ == 0) return true;
+   // Before a path is assigned, retain the dirty state for the first save.
+   if (!pathname_.empty() && !saveIndex(pathname_)) return false;
    additions_since_flush_ = 0;
    return true;
 }
@@ -256,6 +257,20 @@ const float* UnifiedIndex::getOriginalVector(labeltype label) const {
 #else
     return original_vectors_[label].first;
 #endif
+}
+
+bool UnifiedIndex::rescore_distance(const float* query, labeltype label, float* distance) const {
+    if (!enable_rescoring_) return false;
+    return vector_storage_.with_vector(label, [&](const float* data) {
+        if (metric_ == Metric::Cosine) {
+            *distance = 1.0f - hnswlib::cosine_similarity(query, data, dim_);
+        } else if (metric_ == Metric::IP) {
+            *distance = hnswlib::InnerProductDistance(query, data, &dim_);
+        } else {
+            const float l2 = hnswlib::l2_distance(query, data, dim_);
+            *distance = l2 * l2; // Match HNSW's squared L2 metric.
+        }
+    });
 }
 
 /* Masking to handle multiple fields in a single HNSW index */
@@ -361,6 +376,7 @@ std::vector<std::pair<float, labeltype>>
 
 std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn(
     const float* query, size_t k, bool use_rescoring) {
+    if (!index_ || k == 0) return {};
     
     if (normalize_) {
         std::vector<float> normalized(query, query + dim_);
@@ -376,7 +392,7 @@ std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn_interna
 
    // If 32-bit Floating point can pass ..
    if (!is_quantized()) {
-      return index_->searchKnn(query, k);
+      return index_->searchKnn(query, k, isIdAllowed);
    }
 
     std::vector<uint8_t> quantized;
@@ -405,31 +421,11 @@ std::priority_queue<std::pair<float, labeltype>> UnifiedIndex::searchKnn_interna
         auto [hamming_dist, label] = binary_results.top();
         binary_results.pop();
 
-#if 1
-        const float *data = getOriginalVector(label);
-        if (data != nullptr) {
-            float dist; 
-            if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
-                float sim = hnswlib::cosine_similarity(query, data, dim_);
-                dist = 1.0f - sim;
-            } else { 
-                dist = l2_distance(query, data, dim_);
-            }
+        float dist;
+        if (rescore_distance(query, label, &dist))
             rescored.emplace_back(dist, label);
-       }
-#else
-        
-        if (original_vectors_.find(label) != original_vectors_.end()) {
-            float dist;
-            if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
-                float sim = hnswlib::cosine_similarity(query, original_vectors_[label].data(), dim_);
-                dist = 1.0f - sim;
-            } else {
-                dist = l2_distance(query, original_vectors_[label].data(), dim_);
-            }
-            rescored.emplace_back(dist, label);
-        }
-#endif
+        else
+            rescored.emplace_back(normalize_query_distance(hamming_dist, score_scale), label);
     }
     std::sort(rescored.begin(), rescored.end());
     
@@ -453,16 +449,8 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::apply_rescoring(
     rescored.reserve(all_candidates.size());
 
     for (const auto& [dist, label] : all_candidates) {
-        const float* vec_ptr = getOriginalVector(label); 
-
-        if (vec_ptr != nullptr) {
-            float true_dist;
-            if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
-                float sim = hnswlib::cosine_similarity(query_ptr, vec_ptr, dim_);
-                true_dist = 1.0f - sim;
-            } else {
-                true_dist = l2_distance(query_ptr, vec_ptr, dim_);
-            }
+        float true_dist;
+        if (rescore_distance(query_ptr, label, &true_dist)) {
             rescored.emplace_back(true_dist, label);
         } else {
             // Fallback to approximate distance if vector not found
@@ -480,6 +468,7 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::apply_rescoring(
 
 std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
     const float* query, float epsilon, size_t min_cand, size_t max_cand, BaseFilterFunctor* isIdAllowed) {
+    if (!index_ || max_cand == 0) return {};
     
     std::vector<float> query_normalized;
     const float* query_ptr = query;
@@ -493,11 +482,9 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
     std::vector<std::pair<float, labeltype>> results;
     
     if (!is_quantized()) {
-        size_t original_ef = index_->ef_;
-        index_->setEf(max_cand);
-        
+        // HNSW already explores at least k candidates via max(ef, k).
+        // Changing the shared ef here races with other readers.
         auto candidates = index_->searchKnn(query_ptr, max_cand, isIdAllowed);
-        index_->setEf(original_ef);
         
         if (candidates.empty()) return results;
         
@@ -531,11 +518,7 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
         space_->quantize(query_ptr, quantized.data());
         const double score_scale = query_similarity_scale(quantized.data());
         
-        size_t original_ef = index_->ef_;
-        index_->setEf(max_cand);
-        
         auto candidates = index_->searchKnn(quantized.data(), max_cand, isIdAllowed);
-        index_->setEf(original_ef);
         
         if (candidates.empty()) return results;
         
@@ -551,33 +534,7 @@ std::vector<std::pair<float, labeltype>> UnifiedIndex::searchWithStopCondition(
         }
         
         if (enable_rescoring_ && bin_mode_ != OptBinMode::PASS) {
-            std::vector<std::pair<float, labeltype>> rescored;
-            for (const auto& [dist, label] : all_candidates) {
-#if 1
-               const float *data = getOriginalVector(label);
-               if (data != nullptr) {
-                  float true_dist;
-                    if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
-                        float sim = hnswlib::cosine_similarity(query_ptr, data, dim_);
-                        true_dist = 1.0f - sim;
-                    } else {
-                        true_dist = l2_distance(query_ptr, data, dim_);
-                    } 
-                    rescored.emplace_back(true_dist, label);
-                }
-#else
-                if (original_vectors_.find(label) != original_vectors_.end()) {
-                    float true_dist;
-                    if (metric_ == Metric::Cosine || metric_ == Metric::IP) {
-                        float sim = hnswlib::cosine_similarity(query_ptr, original_vectors_[label].data(), dim_);
-                        true_dist = 1.0f - sim;
-                    } else {
-                        true_dist = l2_distance(query_ptr, original_vectors_[label].data(), dim_);
-                    }
-                    rescored.emplace_back(true_dist, label);
-                }
-#endif
-            }
+            auto rescored = apply_rescoring(query_ptr, all_candidates);
             
             if (!rescored.empty()) {
                 std::sort(rescored.begin(), rescored.end());
@@ -634,27 +591,31 @@ bool UnifiedIndex::save() {
 }
 
 bool UnifiedIndex::saveIndex(const std::string& path) {
-    const size_t  additions = additions_since_flush_;
+    const size_t changes = changes_since_save_;
     if (path.empty()) return false;
-    if (pathname_.empty()) pathname_ = path; 
+    const bool first_save = pathname_.empty();
+    if (first_save) vector_storage_.set_basename(path);
 
-    if (additions_since_flush_ == 0) return true; // Nothing to do yet
+    if (!changes && path == pathname_ && file_size(path) > 0) return true;
     if (!space_ || !index_) {
        HNSWERR << "Unintialized Index. Nothing to save in '" << path << "'!\n";
        return false;
     }
 
-    std::ofstream ofs(path, std::ios::binary);
+    // A loaded vector store may map the existing index. Write a new inode
+    // so the save never truncates data that is still being read through mmap.
+    const std::string temporary = path + ".tmp";
+    std::ofstream ofs(temporary, std::ios::binary);
     if (!ofs.is_open()) {
         HNSWERR << "Can't save index: '" << path << "' cannot be opened for writing\n";
         return false; // Can't continue
     }
     // The meta carries also the magic number for the index
-    meta_.save(ofs);
+    if (!meta_.save(ofs)) return false;
 
     if (meta_.enable_rescoring_ != enable_rescoring_) HNSWERR << "Serious logic error: " << __func__  << "()!!!!!!!\n";
 
-    space_->save_quantization_params(ofs);
+    if (is_quantized() && !space_->save_quantization_params(ofs)) return false;
 
     if (enable_rescoring_) {
 
@@ -677,9 +638,22 @@ bool UnifiedIndex::saveIndex(const std::string& path) {
 
     index_->saveIndex(ofs);
 
+    ofs.flush();
+    if (!ofs.good()) return false;
     ofs.close();
+    if (!ofs.good()) return false;
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        HNSWERR << "Can't replace index '" << path << "': " << error.message() << "\n";
+        return false;
+    }
 
-    additions_since_flush_ -= additions;
+    if (first_save) set_filepath(path);
+    if (path == pathname_) {
+        changes_since_save_ -= changes;
+        additions_since_flush_ = 0;
+    }
 
     return true;
 }
@@ -725,6 +699,8 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
     // By specifying max_elements_ = 0 we get a allocator
     size_t  max_elements = max_elements_;
     meta_ = loaded_meta;
+    vector_storage_.set_dim(dim_);
+    vector_storage_.set_storage_mode(storage_mode_);
 
     // We want the max of the configured and stored.
     if (max_elements > max_elements_) {
@@ -751,7 +727,7 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
 #endif  
 
    // 2. Load Quantisation Parameters
-   space_->load_quantization_params(ifs);
+   if (is_quantized() && !space_->load_quantization_params(ifs)) return false;
 
 
     // 3. Load Vectors
@@ -760,8 +736,9 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
 #if LSMVECTORSTORAGE
       // if rescoring: Pass the open stream (reads labels, then mmaps)
       // else skip
-      vector_storage_.load_vectors(path, ifs,
-	enable_rescoring_ ?  storage_mode_ : VectorStorageMode::DISABLED);
+      if (!vector_storage_.load_vectors(path, ifs,
+        enable_rescoring_ ? storage_mode_ : VectorStorageMode::DISABLED,
+        0, /*replay_deltas=*/false)) return false;
 #else
         size_t num_vectors;
         ifs.read(reinterpret_cast<char*>(&num_vectors), sizeof(size_t));
@@ -792,6 +769,8 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
 
 
     ifs.close();
+    additions_since_flush_ = 0;
+    changes_since_save_ = changed ? 1 : 0;
     return true;
 }
 
@@ -806,7 +785,9 @@ void UnifiedIndex::clear() {
 #endif
    }
    create_index();
-}   
+   additions_since_flush_ = 0;
+   ++changes_since_save_;
+}
 
 // Peek at the index file to get element count
 std::pair<size_t, size_t> peek_index_elements(std::istream& ifs) {

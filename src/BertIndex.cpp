@@ -12,6 +12,9 @@
 #include <sstream>
 #include <chrono>
 #include <algorithm>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 
 using namespace std;
@@ -285,6 +288,7 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     if (UnifiedIndex::index_available( index_path ) ) {
        index->loadIndex(index_path);
     }
+    metric = index->get_metric();
 
     if (index && search_ctrl.adaptive_ef) index->setEf(search_ctrl.get_ef());
 
@@ -1259,17 +1263,13 @@ void BertIndex::undelete(size_t label) {
 #endif
 
 void BertIndex::flush() {
- // Only need to flush when we have a diff with the HNSW on disk
-save();
-
   if (dirty_count) {
-    save();
-
     // Flush offsets ONLY if not already sync'd 
     if (!cfg.flush_offsets_each && offsets)
       offsets->flush(); // msync during add
 
-    sentences->flush();
+    if (sentences) sentences->flush();
+    save();
 
     if (cfg.debug)  LOG_DEBUG_S() <<  "Flushed index + sentences to disk";
   } else if (size() == 0) {
@@ -1281,7 +1281,11 @@ void BertIndex::save() {
 
 // Rewrites entire index: normally done in batches after X inserts
   if (size() > 0) {
-     if (index) index->saveIndex(index_path);
+     if (index && !index->saveIndex(index_path)) {
+         LOG_ERROR_S() << "Could not save index " << index_path;
+         release_lock();
+         return; // Preserve dirty_count so a later flush can retry.
+     }
   } else if (file_size(index_path) >= 0) {
       // since != -1 we know it exists
       unlink(index_path.c_str());
@@ -1312,12 +1316,18 @@ template<typename FilterFn>
 std::vector<SearchResult> BertIndex::filter_knn_results(const std::string &query,
                                                         size_t max_k,
                                                         FilterFn filter) {
+    return format_knn_results(search_candidates(query, max_k), filter);
+}
+
+std::vector<std::pair<float, hnswlib::labeltype>> BertIndex::search_candidates(
+    const std::string& query, size_t max_k) {
     if (size() == 0 || !is_valid_query(query))
         return {}; // Nothing to do 
 
     BaseFilterFunctor* isIdAllowed = nullptr; // No filter at this time
     // std::cerr << "QUERY=" << query << std::endl;
-    std::vector<float> emb = encode_text(query); 
+    std::vector<float> emb = encode_text(query, /*search=*/true);
+    if (emb.size() != embedder.embedding_dim() || emb.empty()) return {};
 
     if (search_ctrl.adaptive_ef) index->setEf(search_ctrl.get_ef());
 
@@ -1325,11 +1335,17 @@ std::vector<SearchResult> BertIndex::filter_knn_results(const std::string &query
 
     auto candidates = index->searchKnnCloserFirst(emb.data(), max_k, isIdAllowed);
     auto end = std::chrono::high_resolution_clock::now();
-    auto latency_ms = duration_cast<std::chrono::microseconds>(end - beg).count();
-    search_ctrl.update_after_knn(latency_ms, cfg.debug);
+    const double latency_ms = std::chrono::duration<double, std::milli>(end - beg).count();
+    search_ctrl.update_after_knn(latency_ms, cfg.debug, size());
+    return candidates;
+}
+
+template<typename FilterFn>
+std::vector<SearchResult> BertIndex::format_knn_results(
+    const std::vector<std::pair<float, hnswlib::labeltype>>& candidates, FilterFn filter) {
 
     std::vector<SearchResult> results;
-    results.reserve(max_k);
+    results.reserve(candidates.size());
 
     for (auto &[dist, label] : candidates) {
         float score = score_from_dist(dist);
@@ -1357,27 +1373,9 @@ std::vector<SearchResult> BertIndex::filter_knn_results(const std::string &query
     }
 
 
-/*
-| Metric            | Meaning            | Best value         | Sort order       |
-| ----------------- | ------------------ | ------------------ | ---------------- |
-| L2 / Euclidean    | smaller distance   | → smaller = better | ascending (`<`)  |
-| Cosine similarity | larger cosine      | → larger = better  | descending (`>`) |
-| Inner product     | larger dot product | → larger = better  | descending (`>`) |
-*/
-//    const bool higher_is_better =
-//    	(metric == Metric::Cosine || metric ==  Metric::IP);
-
     std::sort(results.begin(), results.end(),
-          [this](const SearchResult &a, const SearchResult &b) {
-              switch(metric) {
-		case Metric::Cosine:
-		case Metric::IP:
-                  return a.score > b.score;
-		case Metric::L2:
-                  return a.score < b.score;
-		default: break;
-	      }
-	      return false; // Not defined case???
+          [](const SearchResult &a, const SearchResult &b) {
+              return a.score > b.score; // All public scores are higher-is-better.
           });
 
     return results;
@@ -1409,27 +1407,24 @@ std::vector<SearchResult> BertIndex::knn(const std::string &query, size_t k) {
 std::vector<SearchResult> BertIndex::radius(const std::string &query, float r) {
     if (r<0) r = cfg.default_radius;
     return filter_knn_results(query, cfg.max_elements, [r](float score) {
-        return score <= r;
+        return score >= r;
     });
 }
 
 
 std::vector<SearchResult> BertIndex::relative(const std::string &query, float alpha, size_t max_k) {
-    BaseFilterFunctor* isIdAllowed = nullptr; // No filter at this time
-
     if (alpha<0) alpha = cfg.default_alpha;
     if (max_k <=0) max_k = cfg.default_k*cfg.knn_lookahead_scale;
 
-    std::vector<float> emb = encode_text(query); // embed(query);
-    auto topk = index->searchKnnCloserFirst(emb.data(), max_k, isIdAllowed);
+    auto topk = search_candidates(query, max_k);
     if (topk.empty()) return {};
 
-    float best = topk.front().first;
+    float best = score_from_dist(topk.front().first);
     float threshold = best * alpha;
 
     // reuse the helper but with captured threshold
-    return filter_knn_results(query, max_k, [threshold](float score) {
-        return score <= threshold;
+    return format_knn_results(topk, [threshold](float score) {
+        return score >= threshold;
     });
 }
 
@@ -1443,32 +1438,25 @@ std::vector<SearchResult> BertIndex::adaptive(const std::string &query,
     if (minN==0) minN=cfg.default_minN;
     if (lookahead==0) lookahead=cfg.default_lookahead;
     if (gapDelta<0) gapDelta=cfg.default_gapDelta;
-    BaseFilterFunctor* isIdAllowed = nullptr; // No filter at this time
-
-
-    std::vector<float> emb = encode_text(query);// embed(query);
-    auto topk = index->searchKnnCloserFirst(emb.data(), lookahead, isIdAllowed);
+    auto topk = search_candidates(query, lookahead);
     if (topk.empty()) return {};
 
-    float last_score = -1;
+    float last_score = score_from_dist(topk.front().first);
+    const float threshold = last_score * alpha;
     size_t count = 0;
-    std::vector<float> accepted;
-
-    for (auto &[score, _] : topk) {
-        if (count >= minN && last_score > 0 && (score - last_score) > gapDelta)
+    for (const auto& [distance, _] : topk) {
+        const float score = score_from_dist(distance);
+        if (count >= minN && (score < threshold || last_score - score > gapDelta))
             break;
-        accepted.push_back(score);
         last_score = score;
         count++;
     }
 
-    if (accepted.empty())
+    if (count == 0)
         return {};
 
-    float threshold = accepted.back();
-    return filter_knn_results(query, lookahead, [threshold](float score) {
-        return score <= threshold;
-    });
+    topk.resize(count);
+    return format_knn_results(topk, [](float) { return true; });
 }
 
 
@@ -1510,7 +1498,8 @@ std::vector<SearchResult> BertIndex::epsilon_search(const std::string &query, fl
               << " epsilon=" << epsilon;
 #endif
 
-    std::vector<float> emb = encode_text(query);
+    std::vector<float> emb = encode_text(query, /*search=*/true);
+    if (emb.size() != embedder.embedding_dim() || emb.empty()) return {};
 
 /*
 KEY PARAMETERS EXPLAINED:

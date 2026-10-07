@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <cstdint>
+#include <cstddef>
 
 namespace hnswlib {
 
@@ -11,6 +12,10 @@ enum class QuantMode {
 
 // PASS means the Float32 vectors were already quantized!
 enum class OptBinMode  { PASS=0, STANDARD, BETTER, CENTROID, ROTATIONAL, RABITQ, RABITQ_EXTENDED };
+
+// hnswlib.h imports SpaceQuantized while this header is still being read.
+// Make the PASS decoder visible before that include cycle reaches its caller.
+inline float compute_dist_L2_pass(int bits, const uint8_t* a, const uint8_t* b, size_t dim);
 
 }
 

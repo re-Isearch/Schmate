@@ -157,7 +157,8 @@ public:
     }
 
     bool load_vectors(const std::string& filename, std::ifstream& ifs,
-                      VectorStorageMode mode = VectorStorageMode::MEMORY_MAPPED, size_t flush_threshold = 0) {
+                      VectorStorageMode mode = VectorStorageMode::MEMORY_MAPPED, size_t flush_threshold = 0,
+                      bool replay_deltas = true) {
         std::unique_lock lk(rw_mutex_);
 
         base_filename_   = filename;
@@ -169,10 +170,10 @@ public:
 
         lk.unlock();
 
-        return load_vectors(ifs, num_vectors);
+        return load_vectors(ifs, num_vectors, replay_deltas);
     }
 
-    bool load_vectors(std::ifstream& ifs, size_t num_vectors) {
+    bool load_vectors(std::ifstream& ifs, size_t num_vectors, bool replay_deltas = true) {
         if (storage_mode_ == VectorStorageMode::NONE) return true;
 
         if (!ifs) return false; // No stream
@@ -182,6 +183,18 @@ public:
         }
         if (!ifs.good()) return false;
 
+        {
+            std::unique_lock lk(rw_mutex_);
+            cleanup_mmap();
+            main_offsets_.clear();
+            current_delta_.clear();
+            delta_files_.clear();
+            delta_caches_.clear();
+            delta_label_sets_.clear();
+            current_vectors_file_.clear();
+            additions_since_flush_ = 0;
+        }
+
         if (storage_mode_ == VectorStorageMode::DISABLED) {
 	   // Skip the vector section
 	   std::streamoff skip = static_cast<std::streamoff>(num_vectors) * (sizeof(labeltype) + dim_ * sizeof(float));
@@ -189,22 +202,30 @@ public:
            return true;
         }
 
-        // Discover and load delta files
-        if (!load_delta_files_on_startup()) {
+        // A unified index loads its graph and original vectors from one saved
+        // checkpoint. Older sidecars must not override that vector snapshot.
+        if (!replay_deltas) {
+            discover_delta_files(); // Retain version numbers for future flushes.
+        } else if (!load_delta_files_on_startup()) {
             HNSWERR << "load_vectors: failed to load delta files on startup\n";
             return false;
         }   
 
         if (storage_mode_ == VectorStorageMode::IN_MEMORY) {
-            return load_in_memory(ifs, num_vectors);
+            if (!load_in_memory(ifs, num_vectors)) return false;
+            for (const auto& cache : delta_caches_)
+                for (const auto& [label, vector] : cache) current_delta_[label] = vector;
+            return true;
         }
 
         if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED) {
             // Case 1: We might already have compacted vector files: prefer them.
             discover_compact_files(); // populate compact_files_ & compact_version_counter_
-            if (!compact_files_.empty()) {
+            if (replay_deltas && !compact_files_.empty()) {
                 // Load the latest compact file
                 std::string latest = compact_files_.back();
+                ifs.seekg(num_vectors * (sizeof(labeltype) + dim_ * sizeof(float)), std::ios::cur);
+                if (!ifs.good()) return false;
                 // clear stale unified offsets
                 main_offsets_.clear(); // Added 2 Dec 2025
 		return load_vectors_from_vectors_file(latest);
@@ -266,7 +287,7 @@ public:
             #ifdef _WIN32
             return setup_mmap_windows();
             #else
-            return setup_mmap_unix();
+            return num_vectors == 0 || setup_mmap_unix(base_filename_);
             #endif
         }
 
@@ -352,7 +373,7 @@ private:
             auto dir = p.parent_path();
             if (dir.empty()) dir = ".";
 
-            std::string base_stem = p.string() + predicate;
+            std::string base_stem = p.filename().string() + predicate;
 
             for (auto &entry : std::filesystem::directory_iterator(dir)) {
                 if (!entry.is_regular_file()) continue;
@@ -390,7 +411,10 @@ private:
 
     bool  discover_compact_files() {
         std::unique_lock lk(rw_mutex_); // writer lock while we mutate compact_files_ and counter
+        return discover_compact_files_unlocked();
+    }
 
+    bool discover_compact_files_unlocked() {
         compact_files_.clear(); // Empty
 	compact_version_counter_ = 0;
         unsigned  ver = discover_files(compact_files_, vector_pred);
@@ -406,7 +430,7 @@ private:
         std::unique_lock lk(rw_mutex_);
 
         delta_files_.clear();
-        unsigned  ver = discover_files(compact_files_, vector_pred);
+        unsigned  ver = discover_files(delta_files_, delta_pred);
         std::sort(delta_files_.begin(), delta_files_.end());
         delta_version_counter_.store(ver, std::memory_order_relaxed);
         return ver > 0;
@@ -418,8 +442,8 @@ private:
     // Mmap setup / cleanup
     // ------------------------
     #ifndef _WIN32
-    bool setup_mmap_unix() {
-        main_mmap_fd_ = open(base_filename_.c_str(), O_RDONLY);
+    bool setup_mmap_unix(const std::string& filename) {
+        main_mmap_fd_ = open(filename.c_str(), O_RDONLY);
         if (main_mmap_fd_ == -1) return false;
 
         size_t page_size = sysconf(_SC_PAGE_SIZE);
@@ -541,28 +565,25 @@ private:
         ifs.read(reinterpret_cast<char*>(&num_vectors), sizeof(size_t));
         if (!ifs.good()) return false;
 
-        main_offsets_.clear();
         size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
 
-        std::string old_base = base_filename_;
-        base_filename_ = vectors_file;
-
-        main_vectors_offset_ = ifs.tellg();
+        const size_t vectors_offset = ifs.tellg();
+        std::unordered_map<labeltype, size_t> offsets;
 
         for (size_t i = 0; i < num_vectors; ++i) {
             labeltype label;
             ifs.read(reinterpret_cast<char*>(&label), sizeof(labeltype));
-            main_offsets_[label] = i * entry_size;
+            offsets[label] = i * entry_size;
             ifs.seekg(dim_ * sizeof(float), std::ios::cur);
             if (!ifs.good()) {
-                base_filename_ = old_base;
                 return false;
             }
         }
 
-        main_mmap_size_ = num_vectors * entry_size;
-
         cleanup_mmap();
+        main_offsets_ = std::move(offsets);
+        main_vectors_offset_ = vectors_offset;
+        main_mmap_size_ = num_vectors * entry_size;
 
 #if 0
 	HNSWERR << "vectors-file header: num_vectors=" << num_vectors << ", entry_size=" << entry_size << "\n";
@@ -577,7 +598,7 @@ private:
         #ifdef _WIN32
         bool ok = setup_mmap_windows();
         #else
-        bool ok = setup_mmap_unix();
+        bool ok = num_vectors == 0 || setup_mmap_unix(vectors_file);
         #endif
 
         if (ok) {
@@ -586,8 +607,6 @@ private:
                 compact_files_.push_back(vectors_file);
                 std::sort(compact_files_.begin(), compact_files_.end());
             }
-        } else {
-            base_filename_ = old_base;
         }
 
         return ok;
@@ -597,6 +616,7 @@ private:
     // Loading with mmap from unified file region (ifs is at vector region)
     // ------------------------
     bool load_with_mmap(std::ifstream& ifs, size_t num_vectors) {
+        cleanup_mmap();
         main_vectors_offset_ = ifs.tellg();
 
         size_t entry_size = sizeof(labeltype) + dim_ * sizeof(float);
@@ -617,7 +637,7 @@ private:
         #ifdef _WIN32
         return setup_mmap_windows();
         #else
-        return setup_mmap_unix();
+        return num_vectors == 0 || setup_mmap_unix(base_filename_);
         #endif
     }
 
@@ -649,14 +669,20 @@ public:
     // ------------------------
     void addPoint(labeltype label, const float* data) {
         if (do_not_store()) return;
-
-        current_delta_[label] = std::vector<float>(data, data + dim_);
-        additions_since_flush_++;
-
-        if (additions_since_flush_ >= flush_threshold_) {
-            flush_delta();
-	    bool should_compact = (delta_files_.size() >= compact_threshold_);
-	    if (should_compact) compact();
+        bool should_flush;
+        {
+            std::unique_lock lk(rw_mutex_);
+            current_delta_[label] = std::vector<float>(data, data + dim_);
+            ++additions_since_flush_;
+            should_flush = flush_threshold_ && additions_since_flush_ >= flush_threshold_;
+        }
+        if (should_flush && flush_delta()) {
+            bool should_compact;
+            {
+                std::shared_lock lk(rw_mutex_);
+                should_compact = delta_files_.size() >= compact_threshold_;
+            }
+            if (should_compact) compact();
         }
     }
 
@@ -702,7 +728,7 @@ public:
     // Find .delta files and load them
     bool load_delta_files_on_startup() { 
         // load each delta file; we call discover_delta_files() before this, typically.
-        delta_version_counter_ =  discover_delta_files();
+        discover_delta_files(); // Also restores the highest version counter.
         for (const auto &df : delta_files_) {
             if (!load_delta_file_into_cache(df)) {
                 HNSWERR << "load_delta_files_on_startup: failed to load " << df << "\n";
@@ -716,10 +742,10 @@ public:
         std::unique_lock lk(rw_mutex_);
 
         if (current_delta_.empty()) return true;
-        const size_t delta_version_counter_ = delta_files_.size() + 1;
+        const size_t version = ++delta_version_counter_;
 
-	const std::string delta_file = make_delta_filename (delta_version_counter_);
-        std::string tmpname = make_temp_delta_filename(delta_version_counter_);
+	const std::string delta_file = make_delta_filename(version);
+        std::string tmpname = make_temp_delta_filename(version);
 
         std::ofstream ofs(tmpname, std::ios::binary);
         if (!ofs) return false;
@@ -766,6 +792,21 @@ public:
 
     const float* get_vector(labeltype label) const {
         std::shared_lock lk(rw_mutex_);
+        return find_vector_unlocked(label);
+    }
+
+    // Keep the backing vector alive while a reader computes its distance.
+    template <typename Fn>
+    bool with_vector(labeltype label, Fn&& fn) const {
+        std::shared_lock lk(rw_mutex_);
+        const float* vector = find_vector_unlocked(label);
+        if (!vector) return false;
+        fn(vector);
+        return true;
+    }
+
+private:
+    const float* find_vector_unlocked(labeltype label) const {
 
         // 1. Current Delta in memory
         auto it = current_delta_.find(label);
@@ -780,7 +821,7 @@ public:
         }
 
         // 3. Use MMAPED 
-        if (storage_mode_ == VectorStorageMode::MEMORY_MAPPED && main_mmap_ptr_) {
+        if (main_mmap_ptr_) {
             auto mit = main_offsets_.find(label);
             if (mit != main_offsets_.end()) {
                 size_t offset = mit->second + sizeof(labeltype);
@@ -794,7 +835,6 @@ public:
         return nullptr;
     }
 
-private:
     // Helper to read vector for a label from the main source (mmap preferred, else unified-file read)
     bool read_main_vector_to_buffer(labeltype label, std::vector<float>& out_buf) const {
         // reader: use shared lock because it reads main_offsets_ and main_mmap_ptr_
@@ -841,7 +881,7 @@ public:
         // 2. Stream vectors without loading into memory
         for_each_vector([&](labeltype lbl, const float* vec) {
             ofs.write(reinterpret_cast<const char*>(&lbl), sizeof(labeltype));
-            ofs.write(reinterpret_cast<const char*>(&vec), dim_ * sizeof(float));
+            ofs.write(reinterpret_cast<const char*>(vec), dim_ * sizeof(float));
             count++;
         });
         const std::streampos end_pos = ofs.tellp();
@@ -858,40 +898,10 @@ public:
 
     // This loads all the vectors into memory. This can swap!
     std::vector<std::pair<labeltype, std::vector<float>>> get_all_vectors() {
-        if (!current_delta_.empty()) flush_delta();
-
-        std::unordered_map<labeltype, std::vector<float>> all_vectors;
-
-        if (!current_delta_.empty()) {
-           flush_delta();
-        }
-
-
-        std::unique_lock unlock(rw_mutex_, std::adopt_lock);
-
-        if (main_mmap_ptr_) {
-            for (const auto& [label, offset] : main_offsets_) {
-                const float* vec_ptr = reinterpret_cast<const float*>(
-                    static_cast<char*>(main_mmap_ptr_) + offset + sizeof(labeltype)
-                );
-                all_vectors[label] = std::vector<float>(vec_ptr, vec_ptr + dim_);
-            }
-        }
-
-        for (const auto& delta_cache : delta_caches_) {
-            for (const auto& [label, vec] : delta_cache) {
-                all_vectors[label] = vec;
-            }
-        }
-
-        // also include any current_delta_ (should be empty now)
-        for (const auto &kv : current_delta_) all_vectors[kv.first] = kv.second;
-
         std::vector<std::pair<labeltype, std::vector<float>>> result;
-        result.reserve(all_vectors.size());
-        for (auto& [label, vec] : all_vectors) result.emplace_back(label, std::move(vec));
-
-        cleanup_deltas();
+        for_each_vector([&](labeltype label, const float* vector) {
+            result.emplace_back(label, std::vector<float>(vector, vector + dim_));
+        });
         return result;
     }
 
@@ -902,62 +912,55 @@ public:
 // Callbacks are invoked in arbitrary order unless you want sorted iteration.
 template <typename Fn>
 void for_each_vector(Fn fn) {
-    // 1. Flush active delta so caches are consistent
-    {
-        std::shared_lock lk(rw_mutex_);
-        if (!current_delta_.empty()) {
-            // release shared lock and call flush under exclusive lock
-            lk.unlock();
-            flush_delta();
-        }
-     }
-
-    // Now enumerate under shared lock
     std::shared_lock lk(rw_mutex_);
+    for_each_vector_unlocked(fn);
+}
+
+private:
+template <typename Fn>
+void for_each_vector_unlocked(Fn&& fn) const {
 
     // 2. Track which labels we’ve emitted (so delta-only labels are covered)
     // A small unordered_map or set; does NOT store vectors.
     std::unordered_set<labeltype> seen;
     seen.reserve(main_offsets_.size() + 128);
 
-    // 3. Emit mmap-based vectors first, applying delta overrides if present
+    // Emit newest values first, once per label. No disk flush is needed
+    // merely to enumerate or save an in-memory snapshot.
+    const auto emit = [&](const auto& cache) {
+        for (const auto& [label, vector] : cache)
+            if (seen.insert(label).second) fn(label, vector.data());
+    };
+    emit(current_delta_);
+    for (auto cache = delta_caches_.rbegin(); cache != delta_caches_.rend(); ++cache)
+        emit(*cache);
+
+    // Emit base vectors that were not replaced by a newer delta.
     if (main_mmap_ptr_) {
         for (const auto& [label, offset] : main_offsets_) {
-            seen.insert(label);
+            if (!seen.insert(label).second) continue;
 
             const float* base_vec = reinterpret_cast<const float*>(
                 static_cast<const char*>(main_mmap_ptr_) + offset + sizeof(labeltype)
             );
 
-            // Check delta override
-            const float* override_vec = nullptr;
-            for (const auto& dcache : delta_caches_) {
-                auto it = dcache.find(label);
-                if (it != dcache.end()) {
-                    override_vec = it->second.data();
-                    break;
-                }
-            }
-
-            fn(label, override_vec ? override_vec : base_vec);
+            fn(label, base_vec);
         }
     }
 
-    // 4. Emit delta-only vectors (no base entry)
-    for (const auto& dcache : delta_caches_) {
-        for (const auto& [label, vec] : dcache) {
-            if (seen.find(label) == seen.end()) {
-                fn(label, vec.data());
-            }
-        }
-    }
 }
 
+public:
     void clear() {
+        std::unique_lock lk(rw_mutex_);
+        current_delta_.clear();
+        additions_since_flush_ = 0;
         cleanup_deltas();
         cleanup_mmap();
+        main_offsets_.clear();
        // Need to remove current
        std::remove(current_vectors_file_.c_str());
+       current_vectors_file_.clear();
        compact_files_.clear();
     }
 
@@ -975,9 +978,9 @@ public:
     // Supports streaming compaction mode controlled by config_.use_streaming_compaction
     // ------------------------
     bool compact() {
-
-        if (delta_files_.empty() && current_delta_.empty()) {
-            return true;
+        {
+            std::shared_lock lk(rw_mutex_);
+            if (delta_files_.empty() && current_delta_.empty()) return true;
         }
 
         if (config_.use_streaming_compaction) {
@@ -985,16 +988,19 @@ public:
         } else {
             return compact_in_memory();
         }
-        saves_since_compact_ = 0;
     }
 
 private:
     // Old style (in-memory consolidation) compaction
     bool compact_in_memory() {
-        auto all_vectors = get_all_vectors();
+        std::unique_lock lk(rw_mutex_);
+        std::vector<std::pair<labeltype, std::vector<float>>> all_vectors;
+        for_each_vector_unlocked([&](labeltype label, const float* vector) {
+            all_vectors.emplace_back(label, std::vector<float>(vector, vector + dim_));
+        });
 
-        discover_compact_files();
-        uint64_t version = compact_version_counter_++;
+        discover_compact_files_unlocked();
+        uint64_t version = ++compact_version_counter_;
 
         std::string tmpfile = make_temp_compact_filename(version);
         std::string newfile = make_compact_filename(version);
@@ -1010,63 +1016,49 @@ private:
                 ofs.write(reinterpret_cast<const char*>(&label), sizeof(labeltype));
                 ofs.write(reinterpret_cast<const char*>(vec.data()), dim_ * sizeof(float));
             }
+            ofs.flush();
+            if (!ofs.good()) return false;
             ofs.close();
+            if (!ofs.good()) return false;
         }
 
-        cleanup_mmap();
-        main_offsets_.clear();
-
-        std::remove(newfile.c_str());
-        if (std::rename(tmpfile.c_str(), newfile.c_str()) != 0) {
-            std::remove(tmpfile.c_str());
-            return false;
-        }
-
-        std::string prev = current_vectors_file_;
-        current_vectors_file_ = newfile;
-        if (std::find(compact_files_.begin(), compact_files_.end(), newfile) == compact_files_.end()) {
-            compact_files_.push_back(newfile);
-            std::sort(compact_files_.begin(), compact_files_.end());
-        }
-        if (!prev.empty() && prev != current_vectors_file_) {
-            std::remove(prev.c_str());
-            compact_files_.erase(std::remove(compact_files_.begin(), compact_files_.end(), prev),
-                                 compact_files_.end());
-        }
-
-        main_offsets_.clear(); // ADDED 2 Dec 2025
-        if (!load_vectors_from_vectors_file(current_vectors_file_)) {
-            return false;
-        }
-
-        return true;
+        std::error_code error;
+        std::filesystem::rename(tmpfile, newfile, error);
+        if (error) return false;
+        return finalize_compaction(newfile);
     }
 
     // Streaming compaction: writes compact file without holding all vectors
     bool compact_streaming() {
         std::unique_lock lk(rw_mutex_);
+        discover_compact_files_unlocked();
 
         // Open new compact file
         std::string new_file = next_compact_filename();
-        std::ofstream ofs(new_file, std::ios::binary);
+        const std::string tmp_file = new_file + ".tmp";
+        std::ofstream ofs(tmp_file, std::ios::binary);
         if (!ofs.good()) { return false; }
 
         size_t count = 0;
         ofs.write((char*)&count, sizeof(size_t)); // placeholder
 
-        lk.unlock();
         // 1. Stream vectors without loading into memory
-        for_each_vector([&](labeltype lbl, const float* vec) {
+        for_each_vector_unlocked([&](labeltype lbl, const float* vec) {
             ofs.write((char*)&lbl, sizeof(labeltype));
             ofs.write((char*)vec, dim_ * sizeof(float));
             count++;
         });
-        lk.lock();
 
         // 2. Seek back and write actual count
         ofs.seekp(0);
         ofs.write((char*)&count, sizeof(size_t));
+        ofs.flush();
+        if (!ofs.good()) return false;
         ofs.close();
+        if (!ofs.good()) return false;
+        std::error_code error;
+        std::filesystem::rename(tmp_file, new_file, error);
+        if (error) return false;
 
         // 3. Remap the new compact file and cleanup
         return finalize_compaction(new_file);
@@ -1142,7 +1134,10 @@ private:
         }
 
         // 4. Cleanup delta caches (all deltas now merged)
+        current_delta_.clear();
+        additions_since_flush_ = 0;
         cleanup_deltas();
+        saves_since_compact_ = 0;
 
         // 5. Remove older compact vector files
         cleanup_old_compact_files();
@@ -1156,4 +1151,3 @@ private:
 
 
 } // namespace hnswlib
-

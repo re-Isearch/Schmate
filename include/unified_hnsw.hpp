@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cassert>
 #include <queue>
+#include <functional>
 
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -386,6 +387,7 @@ class UnifiedIndex {
 private:
     std::string pathname_;
     size_t additions_since_flush_ = 0;
+    size_t changes_since_save_ = 0;
     size_t &flush_threshold_ = meta_.flush_threshold_;
 
     UnifiedIndexMeta meta_;
@@ -432,6 +434,7 @@ private:
     void addPoint_internal(const float* data, labeltype label);
 
     double query_similarity_scale(const uint8_t* query) const;
+    bool rescore_distance(const float* query, labeltype label, float* distance) const;
 
     std::priority_queue<std::pair<float, labeltype>> searchKnn_internal(
         const float* query, size_t k, BaseFilterFunctor* isIdAllowed, bool use_rescoring);
@@ -460,20 +463,32 @@ public:
     }
 
     void markDelete(labeltype label) {
-       if (index_) index_->markDelete(label);
+       if (index_) {
+           index_->markDelete(label);
+           ++changes_since_save_;
+       }
     }
  
     void unmarkDelete(labeltype label) {
-       if (index_) index_->unmarkDelete(label);
+       if (index_) {
+           index_->unmarkDelete(label);
+           ++changes_since_save_;
+       }
     }
 
     void rawAddPoint(const void* data, labeltype label) {
-       if (index_) index_->addPoint(data, label);
+       if (!index_) create_index();
+       index_->addPoint(data, label);
+       ++changes_since_save_;
     }
 
 
     size_t updateDeletedElements(std::function<bool(labeltype)> isDeleted) {
-       if (index_) return index_->updateDeletedElements(isDeleted);
+       if (index_) {
+           const size_t changed = index_->updateDeletedElements(isDeleted);
+           if (changed) ++changes_since_save_;
+           return changed;
+       }
        return 0; // No index so nothing to delete....
     }
 
@@ -519,7 +534,10 @@ public:
     void setEf(size_t ef);
     size_t getCurrentElementCount() const;
 
-    inline void        set_filepath(const std::string& path) { pathname_ = path; }
+    inline void        set_filepath(const std::string& path) {
+        pathname_ = path;
+        vector_storage_.set_basename(path);
+    }
     inline std::string get_filepath() const                  { return pathname_; }
 
 
