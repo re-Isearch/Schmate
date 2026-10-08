@@ -228,40 +228,56 @@ static float InnerProductSVE16Ext(const void* pVect1, const void* pVect2, const 
 
 #if defined(USE_AVX)
 
-static float InnerProductSIMD4Ext(const void* pVect1v, const void* pVect2v, const void* qty_ptr) {
-    float* pVect1 = (float*)pVect1v;
-    float* pVect2 = (float*)pVect2v;
-    size_t qty = *((size_t*)qty_ptr);
-
+static float
+InnerProductSIMD4ExtAVX(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
     float PORTABLE_ALIGN32 TmpRes[8];
+    float *pVect1 = (float *) pVect1v;
+    float *pVect2 = (float *) pVect2v;
+    size_t qty = *((size_t *) qty_ptr);
+
     size_t qty16 = qty / 16;
+    size_t qty4 = qty / 4;
 
-    const float* pEnd1 = pVect1 + 16 * qty16;
+    const float *pEnd1 = pVect1 + 16 * qty16;
+    const float *pEnd2 = pVect1 + 4 * qty4;
 
-    __m256 sum = _mm256_set1_ps(0);
+    __m256 sum256 = _mm256_set1_ps(0);
 
     while (pVect1 < pEnd1) {
+        //_mm_prefetch((char*)(pVect2 + 16), _MM_HINT_T0);
+
         __m256 v1 = _mm256_loadu_ps(pVect1);
         pVect1 += 8;
         __m256 v2 = _mm256_loadu_ps(pVect2);
         pVect2 += 8;
-        sum = _mm256_add_ps(sum, _mm256_mul_ps(v1, v2));
+        sum256 = _mm256_add_ps(sum256, _mm256_mul_ps(v1, v2));
 
         v1 = _mm256_loadu_ps(pVect1);
         pVect1 += 8;
         v2 = _mm256_loadu_ps(pVect2);
         pVect2 += 8;
-        sum = _mm256_add_ps(sum, _mm256_mul_ps(v1, v2));
+        sum256 = _mm256_add_ps(sum256, _mm256_mul_ps(v1, v2));
     }
 
-    _mm256_store_ps(TmpRes, sum);
-    float res = TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3] + TmpRes[4] + TmpRes[5] + TmpRes[6] + TmpRes[7];
+    __m128 v1, v2;
+    __m128 sum_prod = _mm_add_ps(_mm256_extractf128_ps(sum256, 0), _mm256_extractf128_ps(sum256, 1));
 
-    return res;
+    while (pVect1 < pEnd2) {
+        v1 = _mm_loadu_ps(pVect1);
+        pVect1 += 4;
+        v2 = _mm_loadu_ps(pVect2);
+        pVect2 += 4;
+        sum_prod = _mm_add_ps(sum_prod, _mm_mul_ps(v1, v2));
+    }
+
+    _mm_store_ps(TmpRes, sum_prod);
+    float sum = TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3];
+    return sum;
 }
 
-static float InnerProductDistanceSIMD4Ext(const void* pVect1, const void* pVect2, const void* qty_ptr) {
-    return 1.0f - InnerProductSIMD4Ext(pVect1, pVect2, qty_ptr);
+static float
+InnerProductDistanceSIMD4ExtAVX(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    return 1.0f - InnerProductSIMD4ExtAVX(pVect1v, pVect2v, qty_ptr);
 }
 
 #endif // USE_AVX
@@ -347,6 +363,67 @@ InnerProductDistanceSIMD16ExtAVX(const void *pVect1v, const void *pVect2v, const
 #endif
 
 #if defined(USE_SSE)
+
+static float
+InnerProductSIMD4ExtSSE(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    float PORTABLE_ALIGN32 TmpRes[8];
+    float *pVect1 = (float *) pVect1v;
+    float *pVect2 = (float *) pVect2v;
+    size_t qty = *((size_t *) qty_ptr);
+
+    size_t qty16 = qty / 16;
+    size_t qty4 = qty / 4;
+
+    const float *pEnd1 = pVect1 + 16 * qty16;
+    const float *pEnd2 = pVect1 + 4 * qty4;
+
+    __m128 v1, v2;
+    __m128 sum_prod = _mm_set1_ps(0);
+
+    while (pVect1 < pEnd1) {
+        v1 = _mm_loadu_ps(pVect1);
+        pVect1 += 4;
+        v2 = _mm_loadu_ps(pVect2);
+        pVect2 += 4;
+        sum_prod = _mm_add_ps(sum_prod, _mm_mul_ps(v1, v2));
+
+        v1 = _mm_loadu_ps(pVect1);
+        pVect1 += 4;
+        v2 = _mm_loadu_ps(pVect2);
+        pVect2 += 4;
+        sum_prod = _mm_add_ps(sum_prod, _mm_mul_ps(v1, v2));
+
+        v1 = _mm_loadu_ps(pVect1);
+        pVect1 += 4;
+        v2 = _mm_loadu_ps(pVect2);
+        pVect2 += 4;
+        sum_prod = _mm_add_ps(sum_prod, _mm_mul_ps(v1, v2));
+
+        v1 = _mm_loadu_ps(pVect1);
+        pVect1 += 4;
+        v2 = _mm_loadu_ps(pVect2);
+        pVect2 += 4;
+        sum_prod = _mm_add_ps(sum_prod, _mm_mul_ps(v1, v2));
+    }
+
+    while (pVect1 < pEnd2) {
+        v1 = _mm_loadu_ps(pVect1);
+        pVect1 += 4;
+        v2 = _mm_loadu_ps(pVect2);
+        pVect2 += 4;
+        sum_prod = _mm_add_ps(sum_prod, _mm_mul_ps(v1, v2));
+    }
+
+    _mm_store_ps(TmpRes, sum_prod);
+    float sum = TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3];
+
+    return sum;
+}
+
+static float
+InnerProductDistanceSIMD4ExtSSE(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
+    return 1.0f - InnerProductSIMD4ExtSSE(pVect1v, pVect2v, qty_ptr);
+}
 
 static float
 InnerProductSIMD16ExtSSE(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
@@ -449,6 +526,7 @@ public:
     InnerProductSpace(size_t dim) {
         dim_ = dim;
         data_size_ = dim * sizeof(float);
+        fstdistfunc_ = InnerProductDistance; // Includes dimensions below four.
 
         // Priority: SVE > AVX512 > AVX > NEON > Scalar
 #if defined(__ARM_FEATURE_SVE)

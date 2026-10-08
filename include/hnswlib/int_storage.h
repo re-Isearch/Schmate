@@ -6,10 +6,14 @@
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
+#include <type_traits>
 
+
+#if defined(__AVX2__) || defined(__AVX512BF16__) || defined(__AVX512FP16__)
+  #include <immintrin.h>
+#endif
 
 #if defined(__AVX512FP16__)
-  #include <immintrin.h>
   #define HAS_AVX512FP16 1
   #define USE_SIMD 1
 #elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC__) || defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC__)
@@ -597,16 +601,17 @@ inline void unpack_bf16_from(const uint8_t* in, float* dst, size_t dim) const {
 
 // SIMD is only availabel on x86. ARM has not yet implemented BF16.
 #if defined(__AVX512BF16__)
-#include <immintrin.h>
 
 template<typename T>
-inline void pack_bf16_avx512bf16(const T* src, uint8_t* out, size_t dim) {
+static inline void pack_bf16_avx512bf16(const T* src, uint8_t* out, size_t dim) {
     uint16_t* out16 = reinterpret_cast<uint16_t*>(out);
     size_t i = 0;
-    for (; i + 32 <= dim; i += 32) {
-        __m512 vf = _mm512_loadu_ps((const float*)(src + i));
-        __m256i bf = _mm512_cvtneps_pbh(vf);   // convert 32 fp32 → 32 bf16
-        _mm256_storeu_si256((__m256i*)(out16 + i), bf);
+    if constexpr (std::is_same_v<T, float>) {
+        for (; i + 16 <= dim; i += 16) {
+            __m512 vf = _mm512_loadu_ps(src + i);
+            __m256i bf = (__m256i)_mm512_cvtneps_pbh(vf); // 16 fp32 → 16 bf16.
+            _mm256_storeu_si256((__m256i*)(out16 + i), bf);
+        }
     }
     for (; i < dim; ++i)
         out16[i] = float_to_bf16(float(src[i]));

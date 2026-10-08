@@ -6,6 +6,7 @@
 
 #include "hnswlib/hnswlib.h"
 #include <fcntl.h>
+#include <atomic>
 #include <cstring>
 #include <numeric>
 #include <cmath>
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <shared_mutex>
+#include <mutex>
 
 /*
 The whole point of this class is to provide a flexible storage model for vectors

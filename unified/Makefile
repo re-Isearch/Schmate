@@ -1,9 +1,9 @@
 # Makefile for Unified HNSW with Binary/Ternary Quantization
 
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -march=native -Wall
-INCLUDES = -I. -I./hnswlib
-LDFLAGS =
+CXXFLAGS = -std=c++20 -O3 -march=native -Wall
+INCLUDES = -I../include -I. -I./hnswlib
+LDFLAGS = -pthread
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -12,8 +12,9 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 # Source files
-SOURCES = unified_hnsw.cpp example_usage.cpp
-OBJECTS = unified_hnsw.o
+SOURCES = unified_hnsw.cpp ../src/HnswConfig.cpp ../src/Logger.cpp ../src/FileLock.cpp example_usage.cpp
+SUPPORT_OBJECTS = HnswConfig.o Logger.o FileLock.o
+OBJECTS = unified_hnsw.o $(SUPPORT_OBJECTS)
 TARGET = example_usage
 
 # Header files
@@ -24,14 +25,17 @@ all: $(TARGET)
 arm: arm_test_prog all
 
 # Compile implementation
-unified_hnsw.o: unified_hnsw.cpp unified_hnsw.hpp
+unified_hnsw.o: unified_hnsw.cpp unified_hnsw.hpp ../src/unified_hnsw.cpp ../include/unified_hnsw.hpp ../include/LSMVectorStorage.h
 	@echo "Compiling unified_hnsw.cpp..."
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c unified_hnsw.cpp -o unified_hnsw.o
 
+$(SUPPORT_OBJECTS): %.o: ../src/%.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
 # Link example
-$(TARGET): unified_hnsw.o example_usage.cpp
+$(TARGET): $(OBJECTS) example_usage.cpp
 	@echo "Linking $(TARGET)..."
-	$(CXX) $(CXXFLAGS) $(INCLUDES) unified_hnsw.o example_usage.cpp -o $(TARGET) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(OBJECTS) example_usage.cpp -o $(TARGET) $(LDFLAGS)
 	@echo "Build complete!"
 	@echo ""
 	@echo "Run with: ./$(TARGET)"
@@ -61,7 +65,7 @@ install: $(TARGET)
 	install -m 755 $(TARGET) /usr/local/bin/
 
 # Debug build
-debug: CXXFLAGS = -std=c++17 -g -O0 -Wall -Wextra
+debug: CXXFLAGS = -std=c++20 -g -O0 -Wall -Wextra
 debug: clean all
 
 # Help target
@@ -85,7 +89,7 @@ help:
 	@echo "Example usage:"
 	@echo "  make"
 	@echo "  make run"
-	@echo "  make CXX=clang++ CXXFLAGS='-std=c++17 -O2'"
+	@echo "  make CXX=clang++ CXXFLAGS='-std=c++20 -O2'"
 	@echo ""
 	@echo "Required files:"
 	@echo "  - unified_hnsw.hpp (header)"

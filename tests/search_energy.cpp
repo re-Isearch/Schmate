@@ -1,6 +1,7 @@
 #include "ShardedIndex.hpp"
 #include <atomic>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <mutex>
 
@@ -106,8 +107,16 @@ static void shard_regressions()
 
 int main()
 {
+    // Each invocation must start without the checkpoint files from a previous
+    // CTest run; BertIndex intentionally reopens existing indexes.
+    const auto original_directory = std::filesystem::current_path();
+    auto test_directory = (original_directory / "search-energy-XXXXXX").string();
+    require(::mkdtemp(test_directory.data()) != nullptr, "create isolated search test directory");
+    std::filesystem::current_path(test_directory);
     score_regressions(Metric::L2);
     score_regressions(Metric::Cosine);
     shard_regressions();
+    std::filesystem::current_path(original_directory);
+    std::filesystem::remove_all(test_directory);
     std::cout << "Search energy regressions passed\n";
 }
