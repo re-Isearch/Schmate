@@ -90,7 +90,9 @@ void UnifiedIndex::create_quantized_space() {
            normalize_ = true;
         case Metric::IP:
            space_ = std::make_unique<hnswlib::SpaceQuantizedIP<float>>(dim_, storage_type_,
-		quantization_, bin_mode_);
+		quantization_, bin_mode_, nullptr, 1000,
+                metric_ == Metric::Cosine && bin_mode_ == OptBinMode::PASS &&
+                    storage_type_ == StorageType::INT8);
            break;
     }
 

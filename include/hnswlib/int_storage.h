@@ -52,6 +52,10 @@ enum class StorageType : uint32_t {
 // ------------------------------------------------------------------
 class IntStorage {
 public:
+    // INT8 PASS stores normalized float embeddings as signed fixed-point bytes.
+    // Model-weight quantization (for example GGUF Q8_0) is independent of this.
+    static constexpr float INT8_SCALE = 127.0f;
+
     StorageType type;
     size_t dim;
     std::vector<uint8_t> data;
@@ -535,9 +539,9 @@ inline void unpack_int6_from(const uint8_t* in, float* dst, size_t dim) const {
 template<typename T>
 static void pack_int8_to(const T* src, uint8_t* out, size_t dim) {
     for (size_t i = 0; i < dim; ++i) {
-        int v = int(std::round(src[i]));
-        v = std::clamp(v, 0, 255);
-        out[i] = uint8_t(v);
+        const double scaled = std::round(static_cast<double>(src[i]) * INT8_SCALE);
+        const int8_t v = static_cast<int8_t>(std::clamp(scaled, -127.0, 127.0));
+        out[i] = static_cast<uint8_t>(v);
     }
 }
 
@@ -545,7 +549,7 @@ static void pack_int8_to(const T* src, uint8_t* out, size_t dim) {
 
 inline void unpack_int8_from(const uint8_t* in, float* dst, size_t dim) const {
     for (size_t i = 0; i < dim; ++i)
-        dst[i] = float(in[i]);
+        dst[i] = float(static_cast<int8_t>(in[i])) / INT8_SCALE;
 }
 
 

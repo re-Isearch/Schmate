@@ -692,6 +692,10 @@ private:
 
         // We are pass-through so use other dist function!
         if (bin_mode == OptBinMode::PASS) {
+          if (storage_type == StorageType::INT8) {
+              const float distance = compute_dist_L2_pass(8, a, b, dim);
+              return distance / (IntStorage::INT8_SCALE * IntStorage::INT8_SCALE);
+          }
           size_t bits = 4; // hnswlib::IntStorage::bits_per_element(storage_type);
 //std::cerr << "BITS = " << bits << std::endl;
 	  return compute_dist_L2_pass(bits, a, b, dim);
