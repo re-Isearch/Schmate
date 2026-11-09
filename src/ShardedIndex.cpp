@@ -39,7 +39,7 @@ size_t ShardedIndex::discover_shards(const std::string &base_name) const {
 
 void ShardedIndex::add_shard(size_t id, bool searchOnly) {
     auto shard = make_unique<BertIndex>(embedder, cfg, shard_basename(id), searchOnly, opaque_ptr) ;
-    shard->set_storage_path_dir (base_dir);
+    if (!base_dir.empty()) shard->set_storage_path_dir(base_dir);
     shards.emplace_back(std::move(shard));
     // For the shard based auto-tuner
     shard_tuners.emplace_back(std::make_unique<EfSearchTuner>(cfg.ef_search));
@@ -71,6 +71,7 @@ void ShardedIndex::clear() {
         shard->clear();
     }
     shards.clear();
+    shard_tuners.clear();
 }
 
 
@@ -79,8 +80,7 @@ BertIndex & ShardedIndex::current_shard() {
     if (shards.empty()) throw runtime_error("No shards");
     auto &sh = shards.back();
     if (sh->size() >= cfg.max_elements) {
-        string newname = shard_basename(shards.size());
-        shards.push_back(make_unique<BertIndex>(embedder, cfg,newname, false, opaque_ptr));
+        add_shard(shards.size());
     }
     return *shards.back();
 }
@@ -397,6 +397,7 @@ bool  ShardedIndex::merge_two_parallel(size_t n) {
     remove_safe_indexes ( shard_basename(second) );
 
     shards.pop_back();
+    shard_tuners.pop_back();
 
     if (cfg.debug) LOG_INFO_S() << "Merge done. Total shards now: " << shards.size();
     return true;
@@ -460,6 +461,7 @@ bool ShardedIndex::merge_two_serial(size_t n) {
 
     // Drop the pointer from the vector
     shards.pop_back();
+    shard_tuners.pop_back();
 
     // Recompute shard count
     if (cfg.debug) LOG_INFO_S() << "Shard merge complete. Now have " << shards.size() << " shards.";
@@ -519,6 +521,7 @@ bool ShardedIndex::merge_last_two() {
     // Replace A with merged, drop B
     shards[a_idx] = std::move(merged);
     shards.pop_back();
+    shard_tuners.pop_back();
 
     if (cfg.debug)  LOG_INFO_S() << "Merged shards " << a_idx << " + " << b_idx << " -> " << merged_name
          << " (labels ~ " << total_labels << ")";
@@ -581,6 +584,7 @@ void ShardedIndex::merge_last_two() {
     // Replace shards
     shards[a_idx] = std::move(merged);
     shards.pop_back();
+    shard_tuners.pop_back();
 
     if (cfg.debug)  LOG_INFO_S() << "Compacted shards " << a_idx << " and " << b_idx
          << " into " << merged_name << " (" << total << " items)";

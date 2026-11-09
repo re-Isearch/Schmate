@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
-#include "hnswlib/hnswlib.h"
+#include "unified_hnsw.hpp"
 
 using namespace hnswlib;
 
@@ -51,24 +51,30 @@ static void signed_encoding() {
     require(std::equal(from_double.begin(), from_double.end(), bytes.begin()), "float and double Q8 input agree");
 }
 
-static void cosine_separation(size_t dim) {
-    SpaceQuantizedIP<float> space(dim, StorageType::INT8, QuantMode::NONE,
-                                 OptBinMode::PASS, nullptr, 1000, true);
-    require(space.get_data_size() == dim, "Q8 cosine layout remains one byte per dimension");
+static double coded_dot(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    double dot = 0;
+    for (size_t i = 0; i < a.size(); ++i) dot += int(int8_t(a[i])) * int(int8_t(b[i]));
+    return dot;
+}
+
+static void native_energy_separation(size_t dim) {
+    SpaceQuantizedIP<float> space(dim, StorageType::INT8, QuantMode::NONE, OptBinMode::PASS);
+    require(space.get_data_size() == dim, "Q8 layout remains one byte per dimension");
     const float component = 1.0f / std::sqrt(float(dim));
     std::vector<float> a(dim, component), b(dim, -component), mixed = a;
     for (size_t i = 1; i < dim; i += 2) mixed[i] = -component;
     const auto qa = encode(space, a), qb = encode(space, b), qm = encode(space, mixed);
     require(std::any_of(qa.begin(), qa.end(), [](uint8_t v) { return v != 0; }),
             "normalized 768D/1024D embeddings must not collapse to zero");
-    near(distance(space, qa, qa), 0.0, 1e-6, "identical Q8 vectors have cosine distance zero");
-    near(distance(space, qa, qb), 2.0, 1e-6, "opposite Q8 vectors have cosine distance two");
-    near(distance(space, qa, qm), 1.0 - double(dim % 2) / dim, 1e-6,
-         "orthogonal and odd-dimension Q8 vectors retain their cosine");
-    near((2.0 - distance(space, qa, qa)) / 2.0, 1.0, 1e-6, "matching score is not the broken 0.5 constant");
-    near((2.0 - distance(space, qa, qb)) / 2.0, 0.0, 1e-6, "opposite score separates from a match");
+    const double energy = coded_dot(qa, qa);
+    near(space.query_energy(qa.data()), energy, 0.0, "Q8 energy uses signed stored components");
+    for (const auto* candidate : {&qa, &qb, &qm})
+        near(distance(space, qa, *candidate),
+             1.0 - coded_dot(qa, *candidate) / space.reference_energy, 1e-6,
+             "native Q8 distance keeps the fixed traversal denominator");
     std::vector<uint8_t> zero(dim, 0);
-    near(distance(space, zero, qa), 1.0, 1e-6, "zero-vector cosine distance stays finite");
+    near(space.query_energy(zero.data()), 0.0, 0.0, "zero-vector energy stays zero");
+    near(distance(space, zero, qa), 1.0, 1e-6, "zero-vector native distance stays finite");
 }
 
 static void metric_units() {
@@ -77,14 +83,14 @@ static void metric_units() {
     SpaceQuantizedIP<float> ip(a.size(), StorageType::INT8, QuantMode::NONE, OptBinMode::PASS);
     SpaceQuantized<float> l2(a.size(), StorageType::INT8, QuantMode::NONE, OptBinMode::PASS);
     const auto qa = encode(ip, a), qb = encode(ip, b);
-    double dot = 0.0, squared = 0.0;
+    double squared = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
         const double da = double(int8_t(qa[i])) / 127.0;
         const double db = double(int8_t(qb[i])) / 127.0;
-        dot += da * db;
         squared += (da - db) * (da - db);
     }
-    near(distance(ip, qa, qb), 1.0 - dot, 1e-6, "Q8 IP reverses the encoding scale rather than using Q4 energy");
+    near(distance(ip, qa, qb), 1.0 - coded_dot(qa, qb) / ip.reference_energy, 1e-6,
+         "native Q8 IP retains the query-energy branch traversal metric");
     near(distance(l2, qa, qb), squared, 1e-6, "Q8 L2 uses signed bytes and original vector units");
     near(distance(l2, qa, qa), 0.0, 1e-6, "Q8 L2 self distance is zero");
     // The old four-bit dispatch ignored this part of an INT8 vector.
@@ -109,9 +115,27 @@ static void other_encodings() {
     require(std::memcmp(fp32, halves, sizeof(halves)) == 0, "FP32 pass-through remains exact");
 }
 
-static void graph_roundtrip(size_t dim, const std::filesystem::path& directory) {
-    SpaceQuantizedIP<float> space(dim, StorageType::INT8, QuantMode::NONE,
-                                 OptBinMode::PASS, nullptr, 1000, true);
+static void query_energy_contract() {
+    UnifiedIndexMeta meta(3, 8, Metric::IP, QuantMode::NONE, OptBinMode::PASS, StorageType::INT8);
+    meta.storage_mode_ = VectorStorageMode::DISABLED;
+    UnifiedIndex index(meta);
+    const float query[] = {0.25f, -0.25f, 0};
+    const float twice[] = {0.5f, -0.5f, 0};
+    index.addPoint(query, 10);
+    index.addPoint(twice, 20);
+    const auto result = index.searchKnnCloserFirst(query, 2, false);
+    require(result.size() == 2 && result[0].second == 20 && result[1].second == 10,
+            "query energy preserves candidate magnitude instead of using full cosine");
+    near(result[0].first, -1.0, 1e-6, "twice the query has similarity two in query-energy units");
+    near(result[1].first, 0.0, 1e-6, "self similarity is one in query-energy units");
+    near(index.score_from_dist(result[0].first), 1.0, 1e-6, "public scores bound amplified similarity");
+    const float zero[] = {0, 0, 0};
+    for (const auto& hit : index.searchKnnCloserFirst(zero, 2, false))
+        near(index.score_from_dist(hit.first), 0.5, 1e-6, "zero-energy queries retain neutral source scores");
+}
+
+static void graph_roundtrip(Metric metric, size_t dim, const std::filesystem::path& directory) {
+    SpaceQuantizedIP<float> space(dim, StorageType::INT8, QuantMode::NONE, OptBinMode::PASS);
     std::mt19937 generator(1729);
     std::normal_distribution<float> random;
     std::vector<std::vector<float>> vectors(32, std::vector<float>(dim));
@@ -121,36 +145,58 @@ static void graph_roundtrip(size_t dim, const std::filesystem::path& directory) 
         for (float& value : vector) value /= float(std::sqrt(norm));
     }
     std::vector<std::vector<uint8_t>> packed;
-    HierarchicalNSW<float> index(&space, vectors.size(), 16, 100);
-    index.setEf(vectors.size());
+    UnifiedIndexMeta meta(dim, vectors.size(), metric, QuantMode::NONE,
+                          OptBinMode::PASS, StorageType::INT8, false, 16, 100);
+    meta.storage_mode_ = VectorStorageMode::DISABLED;
+    UnifiedIndex index(meta);
     for (size_t i = 0; i < vectors.size(); ++i) {
-        packed.push_back(encode(space, vectors[i]));
-        index.addPoint(packed.back().data(), i);
+        auto prepared = vectors[i];
+        if (metric == Metric::Cosine) normalize_l2(prepared.data(), dim);
+        packed.push_back(encode(space, prepared));
+        index.addPoint(vectors[i].data(), i);
     }
-    for (size_t query : {size_t(0), size_t(7), size_t(19), size_t(31)}) {
-        const auto result = index.searchKnn(packed[query].data(), 1);
-        require(!result.empty() && result.top().second == query, "Q8 HNSW finds the matching vector rather than arbitrary tied labels");
-        near(result.top().first, 0.0, 1e-6, "Q8 HNSW match distance is zero");
-        for (size_t other = 0; other < vectors.size(); ++other) {
-            double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
-            for (size_t d = 0; d < dim; ++d) {
-                const double a = vectors[query][d], b = vectors[other][d];
-                dot += a * b; norm_a += a * a; norm_b += b * b;
+    index.setEf(vectors.size());
+    const auto verify = [&](UnifiedIndex& current) {
+        for (size_t query : {size_t(0), size_t(7), size_t(19), size_t(31)}) {
+            const double energy = coded_dot(packed[query], packed[query]);
+            const auto result = current.searchKnnCloserFirst(vectors[query].data(), vectors.size(), false);
+            require(result.size() == vectors.size() && result.front().second == query,
+                    "Q8 search finds the matching vector rather than arbitrary tied labels");
+            near(result.front().first, 0.0, 1e-6, "Q8 returned match distance is zero");
+            near(current.score_from_dist(result.front().first), 1.0, 1e-6,
+                 "matching Q8 source score is not the broken 0.5 constant");
+            for (const auto& hit : result) {
+                const size_t other = hit.second;
+                const double expected = 1.0 - coded_dot(packed[query], packed[other]) / energy;
+                near(hit.first, expected, 1e-6, "Q8 returned distance is calibrated exactly once by query energy");
+                double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
+                for (size_t d = 0; d < dim; ++d) {
+                    const double a = vectors[query][d], b = vectors[other][d];
+                    dot += a * b; norm_a += a * a; norm_b += b * b;
+                }
+                near(hit.first, 1.0 - dot / std::sqrt(norm_a * norm_b), 0.025,
+                     "Q8 calibrated distances stay close to the normalized float reference");
             }
-            const double expected = 1.0 - dot / std::sqrt(norm_a * norm_b);
-            near(distance(space, packed[query], packed[other]), expected, 0.025,
-                 "Q8 cosine remains close to the float reference");
+            auto heap = current.searchKnn(vectors[query].data(), vectors.size(), false);
+            require(heap.size() == result.size(), "Q8 heap and ordered searches return the same candidates");
+            while (!heap.empty()) {
+                const auto hit = heap.top(); heap.pop();
+                near(hit.first, 1.0 - coded_dot(packed[query], packed[hit.second]) / energy, 1e-6,
+                     "Q8 heap search preserves query-energy calibration");
+            }
+            const auto stop = current.searchWithStopCondition(vectors[query].data(), 0.02f, 1, vectors.size());
+            require(stop.size() == 1 && stop.front().second == query, "Q8 epsilon uses calibrated distance units");
+            near(stop.front().first, result.front().first, 1e-6, "Q8 epsilon and ordered scores agree");
         }
-    }
-    const std::string filename = (directory / ("index-" + std::to_string(dim) + ".hix")).string();
-    index.saveIndex(filename);
-    HierarchicalNSW<float> loaded(&space, filename);
+    };
+    verify(index);
+    const std::string filename = (directory / ("index-" + std::to_string(int(metric)) + "-" +
+                                              std::to_string(dim) + ".hix")).string();
+    require(index.saveIndex(filename), "save Q8 index and quantization parameters");
+    UnifiedIndex loaded(meta);
+    require(loaded.loadIndex(filename), "reload Q8 index and quantization parameters");
     loaded.setEf(vectors.size());
-    for (size_t query : {size_t(0), size_t(7), size_t(19), size_t(31)}) {
-        const auto result = loaded.searchKnn(packed[query].data(), 1);
-        require(!result.empty() && result.top().second == query, "Q8 ranking survives graph save and reload");
-        near(result.top().first, 0.0, 1e-6, "reloaded Q8 graph preserves matching scores");
-    }
+    verify(loaded);
 }
 
 int main() {
@@ -160,11 +206,14 @@ int main() {
         created = std::filesystem::create_directory(directory);
         require(created, "create an isolated regression directory");
         signed_encoding();
-        for (size_t dim : {1, 3, 31, 32, 33, 127, 384, 768, 1024}) cosine_separation(dim);
+        for (size_t dim : {1, 3, 31, 32, 33, 127, 384, 768, 1024}) native_energy_separation(dim);
         metric_units();
         other_encodings();
-        graph_roundtrip(768, directory);
-        graph_roundtrip(1024, directory);
+        query_energy_contract();
+        for (auto metric : {Metric::Cosine, Metric::IP}) {
+            graph_roundtrip(metric, 768, directory);
+            graph_roundtrip(metric, 1024, directory);
+        }
         std::filesystem::remove_all(directory);
         std::cout << "Q8 pass-through encoding, metrics, ranking and persistence: PASS\n";
         return 0;

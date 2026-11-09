@@ -418,7 +418,7 @@ class L2Space : public SpaceInterface<float> {
 
  public:
     L2Space(size_t dim) {
-//        fstdistfunc_ = L2Sqr;
+        fstdistfunc_ = L2Sqr; // Includes dimensions below four.
         // Priority: SVE > AVX512 > AVX > NEON > Scalar
 #if defined(__ARM_FEATURE_SVE)
         if (has_sve_runtime()) fstdistfunc_ = L2SqrSVE16Ext;

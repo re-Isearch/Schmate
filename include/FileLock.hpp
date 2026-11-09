@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <string>
 #include <chrono>
 #include <fstream>

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 // This allows others to provide their own error/message streams (e.g. RcppHNSW)
 #ifndef HNSWLIB_ERR_OVERRIDE

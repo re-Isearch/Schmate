@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(sbert_search)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # =========================
 # C++ Standard
@@ -11,6 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Options
 # =========================
 option(USE_THREADPOOL "Use cached thread pool for parallel_search" OFF)
+option(SCHMATE_BUILD_ENERGY_TESTS "Build focused vector and search regression tests" OFF)
 
 
 # ====================================================================
@@ -76,10 +78,10 @@ set(EXTENDED_SOURCES
 # =========================
 add_library(sbert_core STATIC ${CORE_SOURCES})
 
-target_include_directories(sbert_core
+target_include_directories(sbert_core BEFORE
     PUBLIC
-        ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/include        # Crucial: Maps absolutely to /Volumes/Celeritas/CoreQuarry/Schmate/include
+        ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/bert.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/bert.cpp/ggml
 )
@@ -89,6 +91,23 @@ target_link_libraries(sbert_core
         bert   # <-- Link directly to the named target from add_subdirectory
         ggml   # <-- Link directly to the named target from add_subdirectory
 )
+
+if(SCHMATE_BUILD_ENERGY_TESTS)
+    enable_testing()
+    find_package(Threads REQUIRED)
+    foreach(test_name vector_energy vector_persistence search_energy header_layout)
+        add_executable(${test_name}_test tests/${test_name}.cpp)
+        target_link_libraries(${test_name}_test PRIVATE sbert_core Threads::Threads)
+        add_test(NAME ${test_name} COMMAND ${test_name}_test)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/${test_name}")
+        set_tests_properties(${test_name} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/${test_name}")
+    endforeach()
+    add_executable(header_layout_legacy_test tests/header_layout.cpp)
+    target_compile_definitions(header_layout_legacy_test PRIVATE SCHMATE_TEST_LEGACY_HEADERS_FIRST)
+    target_link_libraries(header_layout_legacy_test PRIVATE sbert_core Threads::Threads)
+    add_test(NAME header_layout_legacy COMMAND header_layout_legacy_test)
+endif()
 
 # =========================
 # SHARED LIB
@@ -105,7 +124,7 @@ get_filename_component(IB_PHYSICAL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/ib/src" REAL
 message(STATUS "[Schmate Config] Resolved ib/src realpath to: ${IB_PHYSICAL_SRC}")
 
 
-target_include_directories(sbert_shared
+target_include_directories(sbert_shared BEFORE
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include        # engine headers
         ${CMAKE_CURRENT_SOURCE_DIR}/bert.cpp       # Pulls bert.h cleanly
@@ -145,6 +164,11 @@ endif()
 add_executable(sbert_search src/main.cpp)
 add_executable(config_editor utils/config_editor.cpp)
 add_executable(test_reconstruct tests/test_reconstruct.cpp)
+add_executable(vector_background utils/vector_background.cpp)
+foreach(utility config_editor test_reconstruct vector_background)
+    target_sources(${utility} PRIVATE src/StandaloneSentenceStore.cpp)
+endforeach()
+target_link_libraries(vector_background PRIVATE sbert_core)
 
 option(SCHMATE_BUILD_Q8_TESTS "Build the model-independent Q8 pass-through regression" OFF)
 if(SCHMATE_BUILD_Q8_TESTS)
@@ -207,7 +231,7 @@ set_target_properties(sbert_extended PROPERTIES
 )
 
 # Apply to sbert_extended (or whichever target compiles BertIndex.cpp)
-target_include_directories(sbert_extended
+target_include_directories(sbert_extended BEFORE
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include        # Crucial: Maps absolutely to /Volumes/Celeritas/CoreQuarry/Schmate/include
         ${CMAKE_CURRENT_SOURCE_DIR}/bert.cpp
