@@ -170,6 +170,12 @@ foreach(utility config_editor test_reconstruct vector_background)
 endforeach()
 target_link_libraries(vector_background PRIVATE sbert_core)
 
+option(SCHMATE_BUILD_Q8_TESTS "Build the model-independent Q8 pass-through regression" OFF)
+if(SCHMATE_BUILD_Q8_TESTS)
+    enable_testing()
+    add_subdirectory(tests/q8)
+endif()
+
 # =========================
 # Link executables → shared lib
 # =========================
