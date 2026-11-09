@@ -921,10 +921,21 @@ float finalize_dist(double acc) const {
 
         // Fast path INT8
         if (bits == 8) {
+            double norm_a = 0.0, norm_b = 0.0;
             for (size_t i = 0; i < dim; ++i) {
-                acc += int(int8_t(a[i])) * int(int8_t(b[i]));
+                const int va = int(int8_t(a[i])), vb = int(int8_t(b[i]));
+                acc += va * vb;
+                if (use_normalization_) {
+                    norm_a += va * va;
+                    norm_b += vb * vb;
+                }
             }
-            return finalize_dist(acc);
+            if (use_normalization_) {
+                const double norm = std::sqrt(norm_a * norm_b);
+                const double cosine = norm > 0.0 ? acc / norm : 0.0;
+                return float(1.0 - std::clamp(cosine, -1.0, 1.0));
+            }
+            return finalize_dist(acc, double(IntStorage::INT8_SCALE) * IntStorage::INT8_SCALE);
         }
         // Fast path INT4
         if (bits == 4) {

@@ -146,6 +146,12 @@ add_executable(sbert_search src/main.cpp)
 add_executable(config_editor utils/config_editor.cpp)
 add_executable(test_reconstruct tests/test_reconstruct.cpp)
 
+option(SCHMATE_BUILD_Q8_TESTS "Build the model-independent Q8 pass-through regression" OFF)
+if(SCHMATE_BUILD_Q8_TESTS)
+    enable_testing()
+    add_subdirectory(tests/q8)
+endif()
+
 # =========================
 # Link executables → shared lib
 # =========================
