@@ -692,6 +692,8 @@ private:
 
         // We are pass-through so use other dist function!
         if (bin_mode == OptBinMode::PASS) {
+          if (IntStorage::is_floating_storage(storage_type))
+              return float(IntStorage::floating_squared_l2(storage_type, a, b, dim));
           if (storage_type == StorageType::INT8) {
               const float distance = compute_dist_L2_pass(8, a, b, dim);
               return distance / (IntStorage::INT8_SCALE * IntStorage::INT8_SCALE);

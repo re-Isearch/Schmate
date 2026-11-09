@@ -209,6 +209,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         size_links_level0_ = maxM0_ * sizeof(tableint) + sizeof(linklistsizeint);
 
         size_data_per_element_ = size_links_level0_ + data_size_ + sizeof(labeltype);
+        // An odd-sized packed vector must not misalign the next row's link
+        // count or tableint entries. The serialized header records this stride.
+        const size_t link_alignment = std::max(alignof(linklistsizeint), alignof(tableint));
+        size_data_per_element_ += (link_alignment - size_data_per_element_ % link_alignment) % link_alignment;
         offsetData_ = size_links_level0_;
         label_offset_ = size_links_level0_ + data_size_;
         offsetLevel0_ = 0;

@@ -170,7 +170,7 @@ foreach(utility config_editor test_reconstruct vector_background)
 endforeach()
 target_link_libraries(vector_background PRIVATE sbert_core)
 
-option(SCHMATE_BUILD_Q8_TESTS "Build the model-independent Q8 pass-through regression" OFF)
+option(SCHMATE_BUILD_Q8_TESTS "Build model-independent Q8 and floating PASS regressions" OFF)
 if(SCHMATE_BUILD_Q8_TESTS)
     enable_testing()
     add_subdirectory(tests/q8)

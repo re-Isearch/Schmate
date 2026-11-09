@@ -30,7 +30,7 @@ for layout in canonical legacy; do
         "$repo/tests/header_layout.cpp" "${objects[@]}" "$linker_flag" -o "$test_build/header_layout_$layout"
     (cd "$test_build" && "./header_layout_$layout")
 done
-for test_name in vector_energy vector_persistence test_q8_passthrough; do
+for test_name in vector_energy vector_persistence test_q8_passthrough test_float_passthrough; do
     TMPDIR="$test_build" "$cxx" "${flags[@]}" "${sanitize_flags[@]}" -c "$repo/tests/$test_name.cpp" -o "$test_build/$test_name.o"
     "$cxx" -pthread "${sanitize_flags[@]}" "$test_build/$test_name.o" "${objects[@]}" "$linker_flag" -o "$test_build/$test_name"
     (cd "$test_build" && "./$test_name")

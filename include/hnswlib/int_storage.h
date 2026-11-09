@@ -105,6 +105,23 @@ public:
         return (dim * bits_per_element() + 7) / 8;
     }
 
+    // Supported byte-aligned floating PASS formats. Their bit widths alone
+    // cannot select an integer decoder (FP16 and INT16 have different values).
+    static bool is_floating_storage(StorageType type) noexcept {
+        return type == StorageType::FP16 || type == StorageType::BF16 ||
+               type == StorageType::FLOAT32;
+    }
+
+    static double floating_inner_product(StorageType type, const uint8_t* a,
+                                         const uint8_t* b, size_t dim) {
+        return accumulate_floating<false>(type, a, b, dim);
+    }
+
+    static double floating_squared_l2(StorageType type, const uint8_t* a,
+                                      const uint8_t* b, size_t dim) {
+        return accumulate_floating<true>(type, a, b, dim);
+    }
+
     // ---------------------------------------------------------------
     // Main API: pack/unpack
     // ---------------------------------------------------------------
@@ -315,8 +332,11 @@ private:
         uint32_t exp = (h >> 10) & 0x1F;
         uint32_t mant = h & 0x3FF;
         uint32_t f;
-        if (exp == 0)
-            f = mant << 13;
+        if (exp == 0) {
+            // Half subnormals are mantissa * 2^-24, not float subnormals.
+            const float value = std::ldexp(float(mant), -24);
+            return sign ? -value : value;
+        }
         else if (exp == 31)
             f = 0x7F800000 | (mant << 13);
         else
@@ -325,6 +345,47 @@ private:
         float result;
         std::memcpy(&result, &f, sizeof(result));
         return result;
+    }
+
+    template<StorageType Format>
+    static float read_floating(const uint8_t* data, size_t i) {
+        // HNSW's packed records need not align the vector to float/uint16_t.
+        if constexpr (Format == StorageType::FLOAT32) {
+            float value;
+            std::memcpy(&value, data + i * sizeof(value), sizeof(value));
+            return value;
+        } else {
+            uint16_t bits;
+            std::memcpy(&bits, data + i * sizeof(bits), sizeof(bits));
+            if constexpr (Format == StorageType::FP16) return half_bits_to_float(bits);
+            else return bf16_to_float(bits);
+        }
+    }
+
+    template<StorageType Format, bool SquaredL2>
+    static double accumulate_floating_values(const uint8_t* a, const uint8_t* b, size_t dim) {
+        double sum = 0;
+        for (size_t i = 0; i < dim; ++i) {
+            const double x = read_floating<Format>(a, i), y = read_floating<Format>(b, i);
+            if constexpr (SquaredL2) sum += (x - y) * (x - y);
+            else sum += x * y;
+        }
+        return sum;
+    }
+
+    template<bool SquaredL2>
+    static double accumulate_floating(StorageType type, const uint8_t* a,
+                                      const uint8_t* b, size_t dim) {
+        switch (type) {
+            case StorageType::FP16:
+                return accumulate_floating_values<StorageType::FP16, SquaredL2>(a, b, dim);
+            case StorageType::BF16:
+                return accumulate_floating_values<StorageType::BF16, SquaredL2>(a, b, dim);
+            case StorageType::FLOAT32:
+                return accumulate_floating_values<StorageType::FLOAT32, SquaredL2>(a, b, dim);
+            default:
+                throw std::invalid_argument("Unsupported floating PASS storage format");
+        }
     }
 
 // -------------------------------------------------------------
