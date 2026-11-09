@@ -287,6 +287,7 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     index = std::make_unique<hnswlib::UnifiedIndex>(meta);
     if (UnifiedIndex::index_available( index_path ) ) {
        index->loadIndex(index_path);
+       next_label = size(); // Nov 2026: Need to update the next_label for appends
     }
     metric = index->get_metric();
 
