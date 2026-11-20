@@ -410,13 +410,13 @@ void BertIndex::clear() {
 
 BertIndex::~BertIndex() {
     search_ctrl.save(name);
-    close_sentences();
     try {
-        flush(); // persist any unsaved changes
+        flush(); // Replay queued points and persist before closing the sentence store.
         remove_lockfile(); // We ignore if it fails since it is probably 0 from another process
     } catch (...) {
         // destructor should not throw
     }
+    close_sentences();
 }
 
 
