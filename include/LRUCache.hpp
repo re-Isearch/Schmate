@@ -302,7 +302,7 @@ inline size_t est_bytes_per_vector(const hnswlib::HnswConfig &cfg, size_t dim)
 
    size_t base_total = vector_bytes + graph_bytes + per_node_overhead;
 
-   size_t total = static_cast<size_t>( total * (1.0 + extra_overhead_factor));
+   size_t total = static_cast<size_t>(base_total * (1.0 + extra_overhead_factor));
 
    // If rescoring is enabled then we need to add dim * sizeof(float);
 
