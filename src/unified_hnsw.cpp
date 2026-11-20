@@ -762,9 +762,18 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
 #endif
     }
 
-    // 4. Load HNSW Index
+    // 4. Load HNSW Index. Read-only search needs capacity for the
+    // existing population only, not the historic sharding limit.
+    // The HNSW header is at the current stream position, after any
+    // optional rescoring vectors; peek restores that position.
+    if (searchOnly) {
+        const auto [count, stored_capacity] = peek_index_elements(ifs);
+        (void)stored_capacity;
+        if (!ifs.good()) return false;
+        max_elements_ = std::max<size_t>(1, count);
+    }
     create_index(); // If index exists we write over it!
-    index_->loadIndex(ifs, space_.get(), meta_.max_elements_);
+    index_->loadIndex(ifs, space_.get(), max_elements_);
     index_->setEf(meta_.ef_);
 
 
