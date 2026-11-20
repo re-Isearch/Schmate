@@ -228,6 +228,7 @@ int main()
     storage_regressions(false);
     delta_replay_regressions(VectorStorageMode::IN_MEMORY);
     delta_replay_regressions(VectorStorageMode::MEMORY_MAPPED);
+    search_only_capacity_regressions();
     dirty_state_regressions();
     mapped_rescoring_regressions();
     rescore_metric_regressions();
