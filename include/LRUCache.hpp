@@ -39,8 +39,11 @@ public:
         auto it = cache.find(key);
         if (it != cache.end()) {
             // Update value and move to front
+            used_bytes -= cost(it->second.first);
             it->second.first = val;
+            used_bytes += cost(val);
             usage.splice(usage.begin(), usage, it->second.second);
+            trim();
             return;
         }
 
