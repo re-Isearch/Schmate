@@ -17,8 +17,12 @@ public:
     using value_ptr = std::shared_ptr<Value>;
     using deleter_t = std::function<void(const Key&, value_ptr)>;
 
-    explicit LRUCache(size_t capacity_, deleter_t on_evict_ = nullptr)
-        : capacity(capacity_), on_evict(on_evict_) {}
+    using weight_t = std::function<size_t(const value_ptr&)>;
+
+    explicit LRUCache(size_t capacity_, deleter_t on_evict_ = nullptr,
+                      size_t byte_budget_ = 0, weight_t weight_ = nullptr)
+        : capacity(capacity_), on_evict(on_evict_),
+          byte_budget(byte_budget_), weight(std::move(weight_)) {}
 
     value_ptr get(const Key &key) {
         std::lock_guard<std::mutex> lock(mu);
