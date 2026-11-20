@@ -59,12 +59,14 @@ ShardedIndex * BertIndexManager::get(const std::string &name, size_t id)
 
 BertIndexManager::BertIndexManager(SBertGGML & e, hnswlib::HnswConfig & c, size_t max_cached,
 		bool s, void *ptr) : embedder(e), cfg(c), searchOnly (s), opaque_ptr(ptr),
-		index_cache(max_cached, [](const std::string &key, std::shared_ptr<ShardedIndex> idx) {
+		index_cache(s ? 1000 : max_cached, [](const std::string &key, std::shared_ptr<ShardedIndex> idx) {
           if (idx) {
               LOG_INFO_S() << "Evicting index: " << key;
-              idx->flush();  // flush all shards before eviction
+              idx->flush();  // clean search-only shards do not write
           }
-      })
+      }, s ? static_cast<size_t>(HNSWCacheConfig::get_available_ram_bytes() *
+                                HNSWCacheConfig::MAX_RAM_USAGE_RATIO) : 0,
+      [](const std::shared_ptr<ShardedIndex>& idx) { return idx->estimated_resident_bytes(); })
 {}
 
 ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t identity)
