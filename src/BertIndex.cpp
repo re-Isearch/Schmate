@@ -1921,6 +1921,12 @@ int BertIndex::unlink(const std::string &path)
         }
     }
 
+    const std::string queue = path + IndexFileExtensions::hnsw + ".deferred";
+    if (file_exists(queue)) {
+        ++saw;
+        if (::unlink(queue.c_str()) == -1) ++errors;
+    }
+
     if (saw == 0) return -1;
     return errors;
 }
