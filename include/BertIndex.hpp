@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <vector>
+#include <fstream>
 
 struct SearchResult {
     float score;
@@ -85,6 +86,7 @@ friend class ShardedIndex;
     bool adaptive_defer = false; // Chosen by the caller before admitting a graph.
     std::string deferred_path;
     size_t deferred_count = 0;
+    std::ofstream deferred_out;
     void add_or_defer(const float* vector, hnswlib::labeltype label);
     void replay_deferred();
     void drop_deferred();
