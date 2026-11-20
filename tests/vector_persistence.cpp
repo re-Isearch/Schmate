@@ -108,6 +108,28 @@ static bool has_label(UnifiedIndex& index, const float* query, labeltype label)
     return false;
 }
 
+static void search_only_capacity_regressions()
+{
+    UnifiedIndexMeta meta = float_meta();
+    meta.max_elements_ = 500000; // Sharding limit, not the search working set.
+    const float a[]{1, 0}, b[]{0, 1};
+    UnifiedIndex writer(meta);
+    writer.addPoint(a, 1);
+    writer.addPoint(b, 2);
+    require(writer.saveIndex("search-only-capacity.hnsw"), "save sparse HNSW graph");
+
+    UnifiedIndex reader(meta);
+    require(reader.loadIndex("search-only-capacity.hnsw", true), "load sparse graph for search");
+    require(reader.size() == 2, "search-only load preserves element count");
+    require(reader.get_meta().max_elements_ == 2, "search-only load uses populated capacity");
+    require(has_label(reader, a, 1) && has_label(reader, b, 2), "search-only graph remains searchable");
+
+    UnifiedIndex writable(meta);
+    require(writable.loadIndex("search-only-capacity.hnsw", false), "writable load");
+    require(writable.get_meta().max_elements_ == meta.max_elements_,
+            "writable load retains shard capacity");
+}
+
 static void dirty_state_regressions()
 {
     const float a[]{1, 0}, b[]{0, 1};
