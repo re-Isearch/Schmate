@@ -17,6 +17,8 @@
 #include <fstream>
 #include <iostream>
 #include <atomic>
+#include <cstdint>
+#include <vector>
 
 struct SearchResult {
     float score;
@@ -47,6 +49,9 @@ LlamaEmbedder embedder("llama-2-7b.Q4_K_M.gguf");
 
 */
 
+// Stage-one insertion policy; configuration integration follows validation.
+enum class InsertionPolicy { Immediate, Deferred, Adaptive };
+
 class BertIndex {
 friend class ShardedIndex;
     SBertGGML & embedder;
@@ -75,6 +80,14 @@ friend class ShardedIndex;
     std::vector<Chunk> chunk_tokens(const std::string_view sentence);
 
     size_t dirty_count = 0;
+
+    InsertionPolicy insertion_policy = InsertionPolicy::Immediate;
+    bool adaptive_defer = false; // Chosen by the caller before admitting a graph.
+    std::string deferred_path;
+    size_t deferred_count = 0;
+    void add_or_defer(const float* vector, hnswlib::labeltype label);
+    void replay_deferred();
+    void drop_deferred();
 
     void *opaque_ptr = nullptr; // This is for the SentenceStore;
 
@@ -164,6 +177,11 @@ public:
 
     void clear(); // Zap the contents and reset everything
 
+    void set_insertion_policy(InsertionPolicy policy);
+    InsertionPolicy get_insertion_policy() const { return insertion_policy; }
+    void set_adaptive_defer(bool defer);
+    size_t pending_vectors() const { return deferred_count; }
+    void flush_deferred();
     void flush();
     void save();
 //  void load();
