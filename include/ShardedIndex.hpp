@@ -16,6 +16,8 @@ class ShardedIndex {
     std::vector<std::unique_ptr<EfSearchTuner>> shard_tuners;
 
     void *opaque_ptr = nullptr; // This is passed to each BertIndex
+    InsertionPolicy insertion_policy = InsertionPolicy::Immediate;
+    bool adaptive_defer = false;
 
     mutable std::mutex mtx;
 
@@ -46,6 +48,8 @@ std::cerr << "Setting OPAQUE POINTER to " << (long long) ptr << std::endl;
         shard->set_opaque_ptr(ptr);
     }
 
+    void set_insertion_policy(InsertionPolicy policy);
+    void set_adaptive_defer(bool defer);
     void append(const std::string_view sentence);
     void append(const std::string_view sentence, int64_t sentence_id, uint32_t span = 0);
 
