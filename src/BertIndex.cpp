@@ -270,6 +270,7 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     sentences_path = full_storage_path(name + IndexFileExtensions::sentences);
     offsets_path   = full_storage_path(name + IndexFileExtensions::offsets);
     index_path     = full_storage_path(name + IndexFileExtensions::hnsw);
+    deferred_path  = index_path + ".deferred";
 
 
     search_ctrl.adaptive_ef = cfg.auto_tune_ef;
@@ -305,6 +306,22 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
      }
   }
   offsets = std::make_unique<OffsetFile>(offsets_path, max_elements);
+   const auto queued_bytes = file_size(deferred_path);
+   const size_t stride = sizeof(uint64_t) + embedder.n_embd * sizeof(float);
+   if (!searchOnly && queued_bytes > 0) {
+       if (stride == 0 || static_cast<size_t>(queued_bytes) % stride)
+           throw std::runtime_error("Invalid deferred vector queue length: " + deferred_path);
+       deferred_count = static_cast<size_t>(queued_bytes) / stride;
+       std::ifstream in(deferred_path, std::ios::binary);
+       std::vector<float> ignored(embedder.n_embd);
+       for (size_t n = 0; n < deferred_count; ++n) {
+           uint64_t label = 0;
+           in.read(reinterpret_cast<char*>(&label), sizeof(label));
+           in.read(reinterpret_cast<char*>(ignored.data()), ignored.size() * sizeof(float));
+           if (!in) throw std::runtime_error("Cannot scan deferred vector queue");
+           next_label = std::max(next_label, static_cast<size_t>(label + 1));
+       }
+   }
 
   if (cfg.debug && !searchOnly && !offsets->validate_offsets(/*fix=*/true))
      LOG_WARN_S() << "Offset file contained invalid entries; they were reset.";
@@ -340,6 +357,8 @@ void BertIndex::clear() {
     }
 
     close_sentences();
+
+    drop_deferred();
 
     // --- Step 2: Remove existing files ---
     auto try_remove = [&](const std::string &path) {
@@ -903,7 +922,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
                 case _arrays:  emb = schmate_util::floatArrayToFloat32(chunk.text); break;
                 default: break;
             }
-            index->addPoint(emb.data(), (hnswlib::labeltype)(label));
+            add_or_defer(emb.data(), (hnswlib::labeltype)(label));
         } else {
             auto &emb = embeddings[ci];
 
@@ -920,7 +939,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
 	      return label;
             }
 	    // OK: Add point
-            index->addPoint(emb.data(), (hnswlib::labeltype)(label));
+            add_or_defer(emb.data(), (hnswlib::labeltype)(label));
         }
 
         // --- Write OffsetEntry into mmap ---
@@ -954,8 +973,8 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
     }
 
     dirty_count++;
-    if (dirty_count >= cfg.flush_threshold) {
-        // dirty_count triggers index flush: used to throttle HNSW saves
+    if (dirty_count >= cfg.flush_threshold && deferred_count == 0) {
+        // Explicit flush/finalization drains the deferred queue.
         flush();
     }
 
@@ -1263,14 +1282,84 @@ void BertIndex::undelete(size_t label) {
 }
 #endif
 
+void BertIndex::set_insertion_policy(InsertionPolicy policy) {
+    if (searchOnly && policy != InsertionPolicy::Immediate)
+        throw std::logic_error("Cannot defer insertions in a search-only index");
+    if (policy != insertion_policy && deferred_count)
+        flush();
+    insertion_policy = policy;
+}
+
+void BertIndex::set_adaptive_defer(bool defer) {
+    if (insertion_policy != InsertionPolicy::Adaptive)
+        throw std::logic_error("Adaptive admission is not enabled");
+    if (!defer && deferred_count)
+        flush();
+    adaptive_defer = defer;
+}
+
+void BertIndex::add_or_defer(const float* vector, hnswlib::labeltype label) {
+    const bool defer = insertion_policy == InsertionPolicy::Deferred ||
+                       (insertion_policy == InsertionPolicy::Adaptive && adaptive_defer);
+    if (!defer) {
+        index->addPoint(vector, label);
+        return;
+    }
+    if (!deferred_out.is_open()) {
+        deferred_out.open(deferred_path, std::ios::binary | std::ios::app);
+        if (!deferred_out) throw std::runtime_error("Cannot open deferred vector queue: " + deferred_path);
+    }
+    const uint64_t stored_label = static_cast<uint64_t>(label);
+    deferred_out.write(reinterpret_cast<const char*>(&stored_label), sizeof(stored_label));
+    deferred_out.write(reinterpret_cast<const char*>(vector), embedder.n_embd * sizeof(float));
+    if (!deferred_out) throw std::runtime_error("Cannot write deferred vector queue: " + deferred_path);
+    ++deferred_count;
+}
+
+void BertIndex::replay_deferred() {
+    if (!deferred_count) return;
+    if (deferred_out.is_open()) {
+        deferred_out.flush();
+        if (!deferred_out) throw std::runtime_error("Cannot flush deferred vector queue");
+        deferred_out.close();
+    }
+    std::ifstream in(deferred_path, std::ios::binary);
+    if (!in) throw std::runtime_error("Cannot read deferred vector queue: " + deferred_path);
+    std::vector<float> vector(embedder.n_embd);
+    for (size_t n = 0; n < deferred_count; ++n) {
+        uint64_t label = 0;
+        in.read(reinterpret_cast<char*>(&label), sizeof(label));
+        in.read(reinterpret_cast<char*>(vector.data()), vector.size() * sizeof(float));
+        if (!in) throw std::runtime_error("Truncated deferred vector queue: " + deferred_path);
+        index->addPoint(vector.data(), static_cast<hnswlib::labeltype>(label));
+    }
+}
+
+void BertIndex::drop_deferred() {
+    if (deferred_out.is_open()) deferred_out.close();
+    if (deferred_count) {
+        std::error_code ec;
+        std::filesystem::remove(deferred_path, ec);
+        if (ec) {
+            LOG_ERROR_S() << "Cannot remove deferred vector queue " << deferred_path << ": " << ec.message();
+            return;
+        }
+        deferred_count = 0;
+    }
+}
+
+void BertIndex::flush_deferred() { flush(); }
+
 void BertIndex::flush() {
-  if (dirty_count) {
+  if (deferred_count) replay_deferred();
+  if (dirty_count || deferred_count) {
     // Flush offsets ONLY if not already sync'd 
     if (!cfg.flush_offsets_each && offsets)
       offsets->flush(); // msync during add
 
     if (sentences) sentences->flush();
     save();
+    if (dirty_count == 0 && deferred_count) drop_deferred();
 
     if (cfg.debug)  LOG_DEBUG_S() <<  "Flushed index + sentences to disk";
   } else if (size() == 0) {
