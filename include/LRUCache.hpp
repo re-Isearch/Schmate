@@ -84,6 +84,15 @@ public:
 
 
 private:
+    size_t cost(const value_ptr& val) const {
+        return byte_budget && weight && val ? weight(val) : 0;
+    }
+    void trim() {
+        // Retain the single active index even if larger than the budget.
+        while (cache.size() > capacity ||
+               (byte_budget && used_bytes > byte_budget && cache.size() > 1))
+            evict_one();
+    }
     void evict_one() {
         if (usage.empty()) return;
         auto last = usage.back();
