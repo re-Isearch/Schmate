@@ -98,6 +98,7 @@ private:
         auto last = usage.back();
         auto it = cache.find(last);
         if (it != cache.end()) {
+            used_bytes -= cost(it->second.first);
             if (on_evict) on_evict(it->first, it->second.first);
             cache.erase(it);
         }
@@ -105,6 +106,9 @@ private:
     }
 
     size_t capacity;
+    size_t byte_budget = 0;
+    size_t used_bytes = 0;
+    weight_t weight;
     mutable std::mutex mu;
     std::list<Key> usage;
     std::unordered_map<Key, std::pair<value_ptr, typename std::list<Key>::iterator>> cache;
