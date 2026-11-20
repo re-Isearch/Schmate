@@ -67,6 +67,7 @@ public:
         }
         cache.clear();
         usage.clear();
+        used_bytes = 0;
     }
 
     size_t size() const {
