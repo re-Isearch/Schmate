@@ -50,10 +50,8 @@ public:
         // New insertion
         usage.push_front(key);
         cache[key] = { val, usage.begin() };
-
-        if (cache.size() > capacity) {
-            evict_one();
-        }
+        used_bytes += cost(val);
+        trim();
     }
 
     bool contains(const Key &key) {
