@@ -1,4 +1,5 @@
 #include "unified_hnsw.hpp"
+#include "LRUCache.hpp"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -106,6 +107,23 @@ static bool has_label(UnifiedIndex& index, const float* query, labeltype label)
     for (const auto& result : index.searchKnnCloserFirst(query, 16, false))
         if (result.second == label) return true;
     return false;
+}
+
+static void cache_budget_regressions()
+{
+    struct Sample { size_t bytes; };
+    LRUCache<int, Sample> cache(100, nullptr, 100,
+        [](const std::shared_ptr<Sample>& item) { return item->bytes; });
+    cache.put(1, std::make_shared<Sample>(Sample{60}));
+    cache.put(2, std::make_shared<Sample>(Sample{60}));
+    require(!cache.contains(1) && cache.contains(2),
+            "byte-budget LRU evicts oldest index");
+    cache.put(3, std::make_shared<Sample>(Sample{180}));
+    require(cache.size() == 1 && cache.contains(3),
+            "oversized active graph remains cached alone");
+    cache.put(4, std::make_shared<Sample>(Sample{20}));
+    require(cache.size() == 1 && cache.contains(4),
+            "smaller graph replaces oversized entry");
 }
 
 static void search_only_capacity_regressions()
@@ -228,6 +246,7 @@ int main()
     storage_regressions(false);
     delta_replay_regressions(VectorStorageMode::IN_MEMORY);
     delta_replay_regressions(VectorStorageMode::MEMORY_MAPPED);
+    cache_budget_regressions();
     search_only_capacity_regressions();
     dirty_state_regressions();
     mapped_rescoring_regressions();
