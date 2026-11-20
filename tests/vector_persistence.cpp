@@ -1,5 +1,6 @@
 #include "unified_hnsw.hpp"
 #include "LRUCache.hpp"
+#include "BertIndex.hpp"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -240,6 +241,46 @@ static void rescore_metric_regressions()
             "L2 rescoring retains squared-distance units");
 }
 
+
+static void deferred_insertion_regressions()
+{
+    SBertGGML embedder(2); // Raw vector test: no model required.
+    HnswConfig cfg;
+    cfg.max_elements = 8;
+    cfg.flush_threshold = 1; // Deferred entries must survive automatic flush threshold.
+
+    for (const auto policy : {InsertionPolicy::Immediate, InsertionPolicy::Deferred,
+                              InsertionPolicy::Adaptive}) {
+        const std::string base = policy == InsertionPolicy::Immediate ? "points-immediate" :
+                                 policy == InsertionPolicy::Deferred  ? "points-deferred" :
+                                                                       "points-adaptive";
+        BertIndex::unlink(base);
+        {
+            BertIndex graph(embedder, cfg, base);
+            graph.set_insertion_policy(policy);
+            if (policy == InsertionPolicy::Adaptive) graph.set_adaptive_defer(true);
+            graph.append("[1.0, 0.0]", 100);
+            graph.append("[0.0, 1.0]", 101);
+            if (policy != InsertionPolicy::Immediate) {
+                require(graph.pending_vectors() == 2, "deferred queue holds both labels");
+                require(graph.size() == 0, "deferred vectors not yet in HNSW");
+            }
+            graph.flush_deferred();
+            require(graph.pending_vectors() == 0, "flush drains deferred queue");
+            require(graph.size() == 2, "both vectors inserted after flush");
+            require(graph.label_count() == 2, "original labels retained");
+            require(graph.get_sentence_id(0) == 100 && graph.get_sentence_id(1) == 101,
+                    "offset mapping retained during replay");
+        }
+        {
+            BertIndex restored(embedder, cfg, base, true);
+            require(restored.size() == 2, "deferred graph survives reload");
+            require(restored.get_sentence_id(0) == 100 && restored.get_sentence_id(1) == 101,
+                    "labels and offsets survive reload");
+        }
+    }
+}
+
 int main()
 {
     storage_regressions(true);
@@ -247,6 +288,7 @@ int main()
     delta_replay_regressions(VectorStorageMode::IN_MEMORY);
     delta_replay_regressions(VectorStorageMode::MEMORY_MAPPED);
     cache_budget_regressions();
+    deferred_insertion_regressions();
     search_only_capacity_regressions();
     dirty_state_regressions();
     mapped_rescoring_regressions();
