@@ -1351,7 +1351,6 @@ void BertIndex::drop_deferred() {
 void BertIndex::flush_deferred() { flush(); }
 
 void BertIndex::flush() {
-  if (deferred_count) replay_deferred();
   if (dirty_count || deferred_count) {
     // Flush offsets ONLY if not already sync'd 
     if (!cfg.flush_offsets_each && offsets)
@@ -1359,7 +1358,6 @@ void BertIndex::flush() {
 
     if (sentences) sentences->flush();
     save();
-    if (dirty_count == 0 && deferred_count) drop_deferred();
 
     if (cfg.debug)  LOG_DEBUG_S() <<  "Flushed index + sentences to disk";
   } else if (size() == 0) {
@@ -1368,6 +1366,7 @@ void BertIndex::flush() {
 }
 
 void BertIndex::save() {
+  if (deferred_count) replay_deferred();
 
 // Rewrites entire index: normally done in batches after X inserts
   if (size() > 0) {
@@ -1380,6 +1379,7 @@ void BertIndex::save() {
       // since != -1 we know it exists
       unlink(index_path.c_str());
   }
+  if (deferred_count) drop_deferred();
   dirty_count = 0; // Memory = disk
   if (cfg.debug)  LOG_DEBUG_S() << "saved index " << index_path;
   release_lock();
