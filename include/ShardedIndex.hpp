@@ -26,6 +26,7 @@ public:
     BertIndex & current_shard();
     BertIndex & get_shard(size_t i) const;
     size_t shard_count() const;
+    size_t estimated_resident_bytes() const;
 
     void set_base_dir(std::string &dir) { base_dir = dir;  }
     std::string get_base_dir() const    { return base_dir; }
