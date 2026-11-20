@@ -95,6 +95,16 @@ size_t ShardedIndex::shard_count() const {
     return shards.size();
 }
 
+size_t ShardedIndex::estimated_resident_bytes() const {
+    size_t total = 0;
+    for (const auto& shard : shards) {
+        // Search-only loads allocate for actual population, not cfg.max_elements.
+        if (shard->index) total += shard->index->bytes_per_index();
+        total += shard->size() * sizeof(OffsetEntry);
+    }
+    return total;
+}
+
 void ShardedIndex::append(const string_view sentence) {
     current_shard().append(sentence);
 }
