@@ -75,7 +75,12 @@ ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t ide
     if (!idx) {
 
 //std::cerr << "CFG Storage XXXX = " << storage_type_to_string(cfg.storage_type()) << std::endl;
-        auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, insertion_policy);
+        InsertionPolicy policy = insertion_policy;
+#if 1 /* TESTING */
+        if (!searchOnly) policy = InsertionPolicy::Deferred;
+#endif
+        // Pass the policy before construction so existing .hix graphs stay unloaded.
+        auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, policy);
         index_cache.put(name, new_index);
 	new_index->set_base_dir(base_dir);
         return *new_index;
