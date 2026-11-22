@@ -208,6 +208,9 @@ EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, const STRING& Datatype, bool
   }
  }
   dim = embedder ? embedder->embedding_dim() : 0;
+#if 1 /* MEMORY DEBUG */
+  log_vector_free_memory("after embedding indexer initialization");
+#endif
 }
 
 bool EmbeddingIndexer::Ok() const
