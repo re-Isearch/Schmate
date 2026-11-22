@@ -75,7 +75,7 @@ ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t ide
     if (!idx) {
 
 //std::cerr << "CFG Storage XXXX = " << storage_type_to_string(cfg.storage_type()) << std::endl;
-        auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr);
+        auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, insertion_policy);
         index_cache.put(name, new_index);
 	new_index->set_base_dir(base_dir);
         return *new_index;
@@ -94,7 +94,7 @@ ShardedIndex& BertIndexManager::getOrCreate(const std::string & name, size_t ide
     auto it = indexes.find(name);
     if (it != indexes.end()) return *it->second;
     // create new
-    indexes[name] = std::make_unique<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr);
+    indexes[name] = std::make_unique<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, insertion_policy);
     indexes[name]->set_base_dir(base_dir);
 
     return *indexes[name];
