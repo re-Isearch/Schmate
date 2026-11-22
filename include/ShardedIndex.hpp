@@ -23,7 +23,8 @@ class ShardedIndex {
 
 public:
     ShardedIndex(SBertGGML & emb, hnswlib::HnswConfig & c, const std::string & name,
-	bool searchOnly = false, void *ptr = nullptr);
+	bool searchOnly = false, void *ptr = nullptr,
+        InsertionPolicy policy = InsertionPolicy::Immediate);
 
     BertIndex & current_shard();
     BertIndex & get_shard(size_t i) const;
