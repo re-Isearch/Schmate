@@ -293,6 +293,7 @@ static void deferred_insertion_regressions()
             require(!resumed.graph_resident(), "deferred writable reopen does not load HNSW");
             require(resumed.size() == 4, "deferred reopen retains population");
             resumed.append("[3.0, 1.0]", 104);
+            require(resumed.pending_vectors() == 1, "deferred append after reopen queued one vector");
             require(!resumed.graph_resident(), "deferred append after reopen stays disk-only");
             resumed.flush_deferred();
             require(!resumed.graph_resident() && resumed.size() == 5,
