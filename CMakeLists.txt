@@ -103,6 +103,8 @@ if(SCHMATE_BUILD_ENERGY_TESTS)
         set_tests_properties(${test_name} PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/${test_name}")
     endforeach()
+    # BertIndex references the sentence-store bridge; standalone tests need its fallback.
+    target_sources(vector_persistence_test PRIVATE src/StandaloneSentenceStore.cpp)
     add_executable(header_layout_legacy_test tests/header_layout.cpp)
     target_compile_definitions(header_layout_legacy_test PRIVATE SCHMATE_TEST_LEGACY_HEADERS_FIRST)
     target_link_libraries(header_layout_legacy_test PRIVATE sbert_core Threads::Threads)
