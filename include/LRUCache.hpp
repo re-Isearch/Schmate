@@ -70,6 +70,12 @@ public:
         used_bytes = 0;
     }
 
+    void set_capacity(size_t new_capacity) {
+        std::lock_guard<std::mutex> lock(mu);
+        capacity = new_capacity;
+        trim();
+    }
+
     size_t size() const {
         std::lock_guard<std::mutex> lock(mu);
         return cache.size();
