@@ -271,12 +271,27 @@ static void deferred_insertion_regressions()
             require(graph.label_count() == 2, "original labels retained");
             require(graph.get_sentence_id(0) == 100 && graph.get_sentence_id(1) == 101,
                     "offset mapping retained during replay");
+            if (policy != InsertionPolicy::Immediate) {
+                // A released graph must be reloaded, extended and saved again.
+                graph.append("[1.0, 1.0]", 102);
+                graph.append("[2.0, 1.0]", 103);
+                require(graph.pending_vectors() == 2, "second batch queued without graph");
+                graph.flush_deferred();
+                require(graph.size() == 4, "second batch extends the original graph");
+                require(graph.pending_vectors() == 0, "second flush drains the queue");
+                require(graph.get_sentence_id(2) == 102 && graph.get_sentence_id(3) == 103,
+                        "second batch preserves new offset entries");
+            }
         }
         {
             BertIndex restored(embedder, cfg, base, true);
-            require(restored.size() == 2, "deferred graph survives reload");
+            const size_t expected = policy == InsertionPolicy::Immediate ? 2 : 4;
+            require(restored.size() == expected, "all deferred batches survive reload");
             require(restored.get_sentence_id(0) == 100 && restored.get_sentence_id(1) == 101,
-                    "labels and offsets survive reload");
+                    "original labels and offsets survive reload");
+            if (expected == 4)
+                require(restored.get_sentence_id(2) == 102 && restored.get_sentence_id(3) == 103,
+                        "second batch survives reload");
         }
     }
 }
