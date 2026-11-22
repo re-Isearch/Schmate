@@ -91,7 +91,7 @@ ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t ide
 
 #else /* NOT LRU_CACHE */
 BertIndexManager::BertIndexManager(SBertGGML & e, hnswlib::HnswConfig &c, bool s, void *ptr) :
-	embedder(e), cfg(c), searchOnly(s), opaque_ptr(ptr) {}
+	embedder(e), cfg(c), searchOnly(s), opaque_ptr(ptr), insertion_policy(c.insertion_policy) {}
 
 
 
