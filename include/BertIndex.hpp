@@ -86,6 +86,8 @@ friend class ShardedIndex;
     bool adaptive_defer = false; // Chosen by the caller before admitting a graph.
     std::string deferred_path;
     size_t deferred_count = 0;
+    size_t persisted_count = 0;
+    void ensure_graph(bool for_insert, size_t capacity = 0);
     std::ofstream deferred_out;
     void add_or_defer(const float* vector, hnswlib::labeltype label);
     void replay_deferred();
@@ -95,7 +97,8 @@ friend class ShardedIndex;
 
 public:
     BertIndex(SBertGGML & emb, hnswlib::HnswConfig & c, const std::string & n,
-	bool searchOnly = false, void *ptr = nullptr);
+	bool searchOnly = false, void *ptr = nullptr,
+        InsertionPolicy policy = InsertionPolicy::Immediate);
     ~BertIndex();
 
     const std::string      model_ident() const;
@@ -188,7 +191,7 @@ public:
     void save();
 //  void load();
 
-    size_t size() const { return index ? (size_t) index->size() : 0; }
+    size_t size() const { return index && index->has_graph() ? index->size() : persisted_count; }
 
     std::string get_text_by_label(size_t label) const;
     std::string reconstruct_label(size_t label) const { return get_text_by_label(label);}
