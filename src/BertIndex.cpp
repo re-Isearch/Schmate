@@ -252,8 +252,8 @@ float BertIndex::score_from_dist(float dist) const {
 }
 
 // n + ext = path of the index 
-BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, void *ptr) :
-	embedder(emb), cfg(c), name(n), searchOnly(s), opaque_ptr(ptr)
+BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, void *ptr, InsertionPolicy policy) :
+	embedder(emb), cfg(c), name(n), insertion_policy(policy), searchOnly(s), opaque_ptr(ptr)
 {
     size_t max_elements = cfg.max_elements;
 
@@ -286,9 +286,11 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     LOG_DEBUG_S() << "BertIndex: Bin_mode is " << bin_mode_to_string(meta.bin_mode_) << "\n";
 
     index = std::make_unique<hnswlib::UnifiedIndex>(meta);
-    if (UnifiedIndex::index_available( index_path ) ) {
+    if (UnifiedIndex::index_available(index_path) &&
+        (searchOnly || insertion_policy == InsertionPolicy::Immediate)) {
        index->loadIndex(index_path, searchOnly);
-       next_label = size(); // Nov 2026: Need to update the next_label for appends
+       next_label = size();
+       persisted_count = size();
     }
     metric = index->get_metric();
 
@@ -306,6 +308,15 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
      }
   }
   offsets = std::make_unique<OffsetFile>(offsets_path, max_elements);
+   if (!searchOnly && !index->has_graph() && UnifiedIndex::index_available(index_path)) {
+       // Offset entries provide the reserved labels without loading the graph.
+       offsets->for_each([&](size_t label, const OffsetEntry &entry) {
+           if (entry.is_valid()) {
+               ++persisted_count;
+               next_label = std::max(next_label, label + 1);
+           }
+       });
+   }
    const auto queued_bytes = file_size(deferred_path);
    const size_t stride = sizeof(uint64_t) + embedder.n_embd * sizeof(float);
    if (!searchOnly && queued_bytes > 0) {
@@ -396,6 +407,7 @@ void BertIndex::clear() {
     next_label = 0;
     while (!free_labels.empty()) free_labels.pop();  // clear all recycled labels
     dirty_count = 0;
+    persisted_count = 0;
     auto_sentence_id = 0;
 
     // --- Step 5: Optionally persist meta, hyperparameters etc ---
@@ -1282,6 +1294,21 @@ void BertIndex::undelete(size_t label) {
 }
 #endif
 
+void BertIndex::ensure_graph(bool for_insert, size_t capacity) {
+    if (!index) throw std::runtime_error("No unified index");
+    if (index->has_graph()) {
+        if (for_insert && capacity) index->reserve_capacity(capacity);
+        return;
+    }
+    if (UnifiedIndex::index_available(index_path)) {
+        if (!index->loadIndex(index_path, !for_insert, for_insert ? capacity : 0))
+            throw std::runtime_error("Cannot reload graph: " + index_path);
+    } else if (for_insert) {
+        index->reserve_capacity(capacity ? capacity : cfg.max_elements);
+    }
+    if (index->has_graph()) persisted_count = index->size();
+}
+
 void BertIndex::set_insertion_policy(InsertionPolicy policy) {
     if (searchOnly && policy != InsertionPolicy::Immediate)
         throw std::logic_error("Cannot defer insertions in a search-only index");
@@ -1302,6 +1329,7 @@ void BertIndex::add_or_defer(const float* vector, hnswlib::labeltype label) {
     const bool defer = insertion_policy == InsertionPolicy::Deferred ||
                        (insertion_policy == InsertionPolicy::Adaptive && adaptive_defer);
     if (!defer) {
+        ensure_graph(true, cfg.max_elements);
         index->addPoint(vector, label);
         return;
     }
@@ -1323,6 +1351,7 @@ void BertIndex::replay_deferred() {
         if (!deferred_out) throw std::runtime_error("Cannot flush deferred vector queue");
         deferred_out.close();
     }
+    ensure_graph(true, std::max<size_t>(1, std::min(cfg.max_elements, next_label)));
     std::ifstream in(deferred_path, std::ios::binary);
     if (!in) throw std::runtime_error("Cannot read deferred vector queue: " + deferred_path);
     std::vector<float> vector(embedder.n_embd);
@@ -1367,21 +1396,25 @@ void BertIndex::flush() {
 
 void BertIndex::save() {
   if (deferred_count) replay_deferred();
-
-// Rewrites entire index: normally done in batches after X inserts
+  const bool deferred = insertion_policy == InsertionPolicy::Deferred ||
+                        (insertion_policy == InsertionPolicy::Adaptive && adaptive_defer);
   if (size() > 0) {
-     if (index && !index->saveIndex(index_path)) {
+     if (dirty_count && !index->has_graph()) ensure_graph(true, cfg.max_elements);
+     const size_t count = index->has_graph() ? index->size() : persisted_count;
+     const bool ok = deferred ? index->flush_and_release(index_path)
+                              : index->saveIndex(index_path);
+     if (!ok) {
          LOG_ERROR_S() << "Could not save index " << index_path;
          release_lock();
-         return; // Preserve dirty_count so a later flush can retry.
+         return;
      }
-  } else if (file_size(index_path) >= 0) {
-      // since != -1 we know it exists
+     persisted_count = count;
+  } else if (file_size(index_path) >= 0 && !deferred_count) {
       unlink(index_path.c_str());
   }
   if (deferred_count) drop_deferred();
-  dirty_count = 0; // Memory = disk
-  if (cfg.debug)  LOG_DEBUG_S() << "saved index " << index_path;
+  dirty_count = 0;
+  if (cfg.debug) LOG_DEBUG_S() << "saved index " << index_path;
   release_lock();
 }
 
@@ -1412,7 +1445,8 @@ std::vector<SearchResult> BertIndex::filter_knn_results(const std::string &query
 std::vector<std::pair<float, hnswlib::labeltype>> BertIndex::search_candidates(
     const std::string& query, size_t max_k) {
     if (size() == 0 || !is_valid_query(query))
-        return {}; // Nothing to do 
+        return {}; // Nothing to do
+    ensure_graph(false); 
 
     BaseFilterFunctor* isIdAllowed = nullptr; // No filter at this time
     // std::cerr << "QUERY=" << query << std::endl;
@@ -1569,6 +1603,7 @@ std::vector<SearchResult> BertIndex::epsilon_search(const std::string &query, fl
     size_t cur_count = size(); // index->cur_element_count;
     if (cur_count == 0 || !is_valid_query(query) )
         return {}; // Empty index or invalid query
+    ensure_graph(false);
 
     size_t min_candidates = std::min(cfg.min_candidates, cur_count);
     size_t max_candidates = cfg.max_candidates_cap > 0
