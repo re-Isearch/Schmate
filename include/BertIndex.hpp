@@ -50,9 +50,6 @@ LlamaEmbedder embedder("llama-2-7b.Q4_K_M.gguf");
 
 */
 
-// Stage-one insertion policy; configuration integration follows validation.
-enum class InsertionPolicy { Immediate, Deferred, Adaptive };
-
 class BertIndex {
 friend class ShardedIndex;
     SBertGGML & embedder;
