@@ -1779,10 +1779,10 @@ std::string BertIndex::get_text_by_label(size_t label) const {
 
 
 int64_t BertIndex::get_sentence_id(size_t label) const {
-    auto it = chunk_sentence_map.find(label);
-    if (it == chunk_sentence_map.end())
-        return -1;
-    return it->second;
+    // The active append path stores SIDs in the mmap-backed OffsetFile.
+    // chunk_sentence_map belongs to the older, inactive append implementation.
+    const OffsetEntry* entry = offsets ? offsets->get_mut(label) : nullptr;
+    return entry && entry->is_valid() ? entry->sid : -1;
 }
 
 
