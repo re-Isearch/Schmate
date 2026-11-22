@@ -8,6 +8,8 @@
 #include "hnswlib/quantized.h"
 #include "Logger.hpp"
 
+enum class InsertionPolicy { Immediate, Deferred, Adaptive };
+
 namespace hnswlib {
 
 struct IndexFileExtensions {
@@ -111,6 +113,8 @@ struct HnswConfig {
     std::string  model_name;
 
     size_t max_elements = 500000;
+    InsertionPolicy insertion_policy = InsertionPolicy::Immediate;
+    size_t cache_size = 0; // 0 = automatic (64 for deferred/adaptive indexing)
     size_t M = 16;
     size_t ef_construction = 200;
 
@@ -297,7 +301,7 @@ struct HnswConfig {
     // Get all keys
     static std::vector<std::string> get_all_keys() {
         return {
-            "model",
+            "model", "insertion_policy", "cache_size",
             "max_elements", "M", "ef_construction", "ef_search", "metric",
             "bert_n_threads", "max_tokens_per_chunk", "overlap_percent",
             "debug", "default_k", "default_radius", "default_alpha",
