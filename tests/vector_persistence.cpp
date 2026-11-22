@@ -290,6 +290,7 @@ static void deferred_insertion_regressions()
         }
         if (policy != InsertionPolicy::Immediate) {
             BertIndex resumed(embedder, cfg, base, false, nullptr, policy);
+            if (policy == InsertionPolicy::Adaptive) resumed.set_adaptive_defer(true);
             require(!resumed.graph_resident(), "deferred writable reopen does not load HNSW");
             require(resumed.size() == 4, "deferred reopen retains population");
             resumed.append("[3.0, 1.0]", 104);
