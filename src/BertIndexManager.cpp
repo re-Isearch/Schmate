@@ -59,7 +59,10 @@ ShardedIndex * BertIndexManager::get(const std::string &name, size_t id)
 
 BertIndexManager::BertIndexManager(SBertGGML & e, hnswlib::HnswConfig & c, size_t max_cached,
 		bool s, void *ptr) : embedder(e), cfg(c), searchOnly (s), opaque_ptr(ptr),
-		index_cache(s && HNSWCacheConfig::get_available_ram_bytes() ? 1000 : max_cached, [](const std::string &key, std::shared_ptr<ShardedIndex> idx) {
+		insertion_policy(c.insertion_policy),
+		index_cache(s && HNSWCacheConfig::get_available_ram_bytes() ? 1000 :
+                    c.cache_size ? c.cache_size :
+                    (c.insertion_policy != InsertionPolicy::Immediate ? 64 : max_cached), [](const std::string &key, std::shared_ptr<ShardedIndex> idx) {
           if (idx) {
               LOG_INFO_S() << "Evicting index: " << key;
               idx->flush();  // clean search-only shards do not write
@@ -76,12 +79,6 @@ ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t ide
 
 //std::cerr << "CFG Storage XXXX = " << storage_type_to_string(cfg.storage_type()) << std::endl;
         InsertionPolicy policy = insertion_policy;
-#if 1 /* TESTING */
-        if (!searchOnly) policy = InsertionPolicy::Deferred;
-#endif
-        if (!searchOnly && (policy == InsertionPolicy::Deferred ||
-                            policy == InsertionPolicy::Adaptive))
-            index_cache.set_capacity(64);
         // Pass the policy before construction so existing .hix graphs stay unloaded.
         auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, policy);
         index_cache.put(name, new_index);
