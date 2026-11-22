@@ -1168,7 +1168,8 @@ std::vector<size_t> BertIndex::find_labels_by_sid(int64_t sid) const
 
 
 void BertIndex::remove(size_t label) {
-    ensure_graph(true, cfg.max_elements);
+    if (deferred_count) flush(); // A queued label must exist before it can be deleted.
+    ensure_graph(true, std::max<size_t>(1, next_label));
     index->markDelete(label);
 
     // clear offset entry
@@ -1183,7 +1184,8 @@ void BertIndex::remove(size_t label) {
 
 
 size_t BertIndex::removeDeletedElements(std::function<bool(size_t)>isDeleted) {
-  ensure_graph(true, cfg.max_elements);
+  if (deferred_count) flush();
+  ensure_graph(true, std::max<size_t>(1, next_label));
   const size_t deleted = index->updateDeletedElements(isDeleted);
   if (deleted) {
     LOG_INFO_S() << "Deleted " << deleted << " elements from vector db";
@@ -1196,7 +1198,8 @@ size_t BertIndex::removeDeletedElements(std::function<bool(size_t)>isDeleted) {
 
 
 void BertIndex::undelete(size_t label, const OffsetEntry &entry) {
-    ensure_graph(true, cfg.max_elements);
+    if (deferred_count) flush();
+    ensure_graph(true, std::max<size_t>(1, next_label));
     // restore offset entry
     offsets->set(label, entry);
 
@@ -1318,6 +1321,10 @@ void BertIndex::set_insertion_policy(InsertionPolicy policy) {
     if (policy != insertion_policy && deferred_count)
         flush();
     insertion_policy = policy;
+    if (policy == InsertionPolicy::Deferred && index && index->has_graph() && size()) {
+        if (!index->flush_and_release(index_path))
+            throw std::runtime_error("Cannot release graph after switching to deferred mode");
+    }
 }
 
 void BertIndex::set_adaptive_defer(bool defer) {
