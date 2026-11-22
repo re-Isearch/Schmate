@@ -241,6 +241,24 @@ if (!index_) std::cerr << "INDEX IS NULL" << std::endl;
 }
 
 
+void UnifiedIndex::reserve_capacity(size_t capacity) {
+    capacity = std::max<size_t>(1, capacity);
+    if (index_) {
+        if (capacity > max_elements_) {
+            index_->resizeIndex(capacity);
+            max_elements_ = capacity;
+        }
+    } else {
+        max_elements_ = capacity;
+    }
+}
+
+bool UnifiedIndex::flush_and_release(const std::string& path) {
+    if (index_ && !saveIndex(path)) return false;
+    index_.reset();
+    return true;
+}
+
 bool UnifiedIndex::flush() {
    if (changes_since_save_ == 0) return true;
    // Before a path is assigned, retain the dirty state for the first save.
@@ -662,7 +680,7 @@ bool UnifiedIndex::load(bool searchOnly) {
    return loadIndex(pathname_, searchOnly) ;
 }
 
-bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
+bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly, size_t requested_capacity) {
     if (path.empty()) return false;
 
     if (pathname_.empty()) pathname_ = path; 
@@ -721,8 +739,7 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
 #if DELAY_ALLOC == 1
     // Make sure we have an index, create if needed
      if (changed || !space_) {
-	create_space(); // We force a create since dim might be different!
-        create_index();
+        create_space(); // Graph allocation waits until the required capacity is known.
     }
 #endif  
 
@@ -766,11 +783,11 @@ bool UnifiedIndex::loadIndex(const std::string& path, bool searchOnly) {
     // existing population only, not the historic sharding limit.
     // The HNSW header is at the current stream position, after any
     // optional rescoring vectors; peek restores that position.
-    if (searchOnly) {
+    if (searchOnly || requested_capacity) {
         const auto [count, stored_capacity] = peek_index_elements(ifs);
         (void)stored_capacity;
         if (!ifs.good()) return false;
-        max_elements_ = std::max<size_t>(1, count);
+        max_elements_ = std::max<size_t>(1, std::max(count, requested_capacity));
     }
     create_index(); // If index exists we write over it!
     index_->loadIndex(ifs, space_.get(), max_elements_);
