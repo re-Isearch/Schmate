@@ -38,7 +38,7 @@ size_t ShardedIndex::discover_shards(const std::string &base_name) const {
 }
 
 void ShardedIndex::add_shard(size_t id, bool searchOnly) {
-    auto shard = make_unique<BertIndex>(embedder, cfg, shard_basename(id), searchOnly, opaque_ptr) ;
+    auto shard = make_unique<BertIndex>(embedder, cfg, shard_basename(id), searchOnly, opaque_ptr, insertion_policy) ;
     shard->set_insertion_policy(insertion_policy);
     if (insertion_policy == InsertionPolicy::Adaptive) shard->set_adaptive_defer(adaptive_defer);
     if (!base_dir.empty()) shard->set_storage_path_dir(base_dir);
@@ -49,7 +49,7 @@ void ShardedIndex::add_shard(size_t id, bool searchOnly) {
 
 // Creator
 ShardedIndex::ShardedIndex(SBertGGML & emb, HnswConfig & c, const string & name,
-	bool searchOnly, void *ptr) : embedder(emb), cfg(c), base_name(name), opaque_ptr(ptr) {
+	bool searchOnly, void *ptr, InsertionPolicy policy) : embedder(emb), cfg(c), base_name(name), opaque_ptr(ptr), insertion_policy(policy) {
     size_t found = discover_shards(base_name);
     if (found == 0) {
         if (searchOnly) {
