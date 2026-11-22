@@ -256,18 +256,21 @@ static void deferred_insertion_regressions()
                                                                        "points-adaptive";
         BertIndex::unlink(base);
         {
-            BertIndex graph(embedder, cfg, base);
+            BertIndex graph(embedder, cfg, base, false, nullptr, policy);
             graph.set_insertion_policy(policy);
             if (policy == InsertionPolicy::Adaptive) graph.set_adaptive_defer(true);
             graph.append("[1.0, 0.0]", 100);
             graph.append("[0.0, 1.0]", 101);
             if (policy != InsertionPolicy::Immediate) {
+                require(!graph.graph_resident(), "deferred insertion never allocated a graph");
                 require(graph.pending_vectors() == 2, "deferred queue holds both labels");
                 require(graph.size() == 0, "deferred vectors not yet in HNSW");
             }
             graph.flush_deferred();
             require(graph.pending_vectors() == 0, "flush drains deferred queue");
             require(graph.size() == 2, "both vectors inserted after flush");
+            if (policy != InsertionPolicy::Immediate)
+                require(!graph.graph_resident(), "first replay released graph memory");
             require(graph.label_count() == 2, "original labels retained");
             require(graph.get_sentence_id(0) == 100 && graph.get_sentence_id(1) == 101,
                     "offset mapping retained during replay");
@@ -276,22 +279,36 @@ static void deferred_insertion_regressions()
                 graph.append("[1.0, 1.0]", 102);
                 graph.append("[2.0, 1.0]", 103);
                 require(graph.pending_vectors() == 2, "second batch queued without graph");
+                require(!graph.graph_resident(), "repeated appends do not load graph");
                 graph.flush_deferred();
                 require(graph.size() == 4, "second batch extends the original graph");
                 require(graph.pending_vectors() == 0, "second flush drains the queue");
+                require(!graph.graph_resident(), "second replay released graph memory");
                 require(graph.get_sentence_id(2) == 102 && graph.get_sentence_id(3) == 103,
                         "second batch preserves new offset entries");
             }
         }
+        if (policy != InsertionPolicy::Immediate) {
+            BertIndex resumed(embedder, cfg, base, false, nullptr, policy);
+            require(!resumed.graph_resident(), "deferred writable reopen does not load HNSW");
+            require(resumed.size() == 4, "deferred reopen retains population");
+            resumed.append("[3.0, 1.0]", 104);
+            require(!resumed.graph_resident(), "deferred append after reopen stays disk-only");
+            resumed.flush_deferred();
+            require(!resumed.graph_resident() && resumed.size() == 5,
+                    "third batch replayed and released");
+        }
         {
             BertIndex restored(embedder, cfg, base, true);
-            const size_t expected = policy == InsertionPolicy::Immediate ? 2 : 4;
+            const size_t expected = policy == InsertionPolicy::Immediate ? 2 : 5;
             require(restored.size() == expected, "all deferred batches survive reload");
             require(restored.get_sentence_id(0) == 100 && restored.get_sentence_id(1) == 101,
                     "original labels and offsets survive reload");
-            if (expected == 4)
+            if (expected == 5) {
                 require(restored.get_sentence_id(2) == 102 && restored.get_sentence_id(3) == 103,
                         "second batch survives reload");
+                require(restored.get_sentence_id(4) == 104, "third batch survives reload");
+            }
         }
     }
 }
