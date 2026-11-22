@@ -544,7 +544,7 @@ public:
     bool save();
     bool saveIndex(const std::string& path);
     bool load(bool SearchOnly = false);
-    bool loadIndex(const std::string& path, bool SearchOnly = false);
+    bool loadIndex(const std::string& path, bool SearchOnly = false, size_t requested_capacity = 0);
 
     static bool index_available(const std::string& path) {
       auto length = file_size(path);
