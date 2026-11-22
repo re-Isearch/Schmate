@@ -57,6 +57,14 @@ static const char default_model[] = "sbert.ggml";
 
 static const char search_path[] = PLATFORM_MODELS_PATH;
 
+#if 1 /* MEMORY DEBUG */
+static void log_vector_free_memory(const char *stage)
+{
+    message_log(LOG_INFO, "[VectorMem] %s: IB free = %llu MiB",
+                stage, static_cast<unsigned long long>(_IB_GetFreeMemory() / (1024 * 1024)));
+}
+#endif
+
 #ifdef DEBUG
 
 // Unified printResults() for all search modes
@@ -461,7 +469,21 @@ std::vector<SearchResult> EmbeddingIndexer::search(const std::string &filename, 
 */
 
 
-EmbeddingIndexer::~EmbeddingIndexer() = default;
+EmbeddingIndexer::~EmbeddingIndexer()
+{
+#if 1 /* MEMORY DEBUG */
+    log_vector_free_memory("before deferred graph replay / manager release");
+#endif
+    // Manager owns indexes and flushes queued vectors; it references the embedder.
+    manager.reset();
+#if 1 /* MEMORY DEBUG */
+    log_vector_free_memory("after manager release");
+#endif
+    embedder.reset();
+#if 1 /* MEMORY DEBUG */
+    log_vector_free_memory("after embedding model release");
+#endif
+}
 
 
 const char * EmbeddingIndexer::Description()
