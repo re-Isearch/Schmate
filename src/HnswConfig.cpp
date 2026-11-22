@@ -11,7 +11,7 @@ extern "C" {
 }
 #endif
 
-static const uint16_t config_version = 1;
+static const uint16_t config_version = 2;
 
 
 namespace hnswlib {
@@ -380,6 +380,9 @@ StorageType string_to_storage_type(const std::string& s)
         write_value(auto_tune_eps);
         write_value(deletion_threshold_pc);
 	write_value(unified_index);
+        const uint8_t policy = static_cast<uint8_t>(insertion_policy);
+        write_value(policy);
+        write_value(cache_size);
     }
 
     void HnswConfig::load(std::ifstream& is) {
@@ -390,7 +393,7 @@ StorageType string_to_storage_type(const std::string& s)
         // Read version
         uint16_t version;
         read_value(version);
-        if (version != config_version) {
+        if (version != 1 && version != config_version) {
             throw std::runtime_error("Unsupported config version");
         }
         specification = read_string(is); // Get the specification
@@ -430,8 +433,16 @@ StorageType string_to_storage_type(const std::string& s)
 
         read_value(deletion_threshold_pc);
 	read_value(unified_index);
+        if (version >= 2) {
+            uint8_t policy = 0;
+            read_value(policy);
+            if (!is || policy > static_cast<uint8_t>(InsertionPolicy::Adaptive))
+                throw std::runtime_error("Invalid insertion policy in config");
+            insertion_policy = static_cast<InsertionPolicy>(policy);
+            read_value(cache_size);
+            if (!is) throw std::runtime_error("Truncated configuration");
+        }
 
-        
         if (!validate()) {
             throw std::runtime_error("Loaded invalid configuration");
         }
@@ -482,7 +493,9 @@ StorageType string_to_storage_type(const std::string& s)
             if (override.field != defaults.field) { \
                 this->field = override.field; \
             }
-        OVERRIDE_IF_DIFFERENT(model_name); 
+        OVERRIDE_IF_DIFFERENT(model_name);
+        OVERRIDE_IF_DIFFERENT(insertion_policy);
+        OVERRIDE_IF_DIFFERENT(cache_size); 
         OVERRIDE_IF_DIFFERENT(default_search_mode);
         OVERRIDE_IF_DIFFERENT(max_elements);
         OVERRIDE_IF_DIFFERENT(M);
@@ -529,6 +542,8 @@ StorageType string_to_storage_type(const std::string& s)
         os << "Default search mode: " << search_mode_to_string(default_search_mode) << "\n";
         os << "\nIndex parameters:\n";
         os << "  max_elements: " << max_elements << "\n";
+        os << "  insertion_policy: " << get("insertion_policy") << "\n";
+        os << "  cache_size: " << get("cache_size") << "\n";
         os << "  M: " << M << "\n";
         os << "  ef_construction: " << ef_construction << "\n";
         os << "  ef_search: " << ef_search << "\n";
@@ -613,6 +628,14 @@ StorageType string_to_storage_type(const std::string& s)
     bool HnswConfig::set(const std::string& key, const std::string& value) {
         try {
             // size_t fields
+            if (key == "insertion_policy") {
+                if (value == "Immediate" || value == "immediate") insertion_policy = InsertionPolicy::Immediate;
+                else if (value == "Deferred" || value == "deferred") insertion_policy = InsertionPolicy::Deferred;
+                else if (value == "Adaptive" || value == "adaptive") insertion_policy = InsertionPolicy::Adaptive;
+                else return false;
+                return true;
+            }
+            if (key == "cache_size") { cache_size = value == "auto" ? 0 : std::stoull(value); return true; }
             if (key == "max_elements") { max_elements = std::stoull(value); return true; }
             if (key == "M") { M = std::stoull(value); return true; }
             if (key == "ef_construction") { ef_construction = std::stoull(value); return true; }
@@ -701,6 +724,14 @@ StorageType string_to_storage_type(const std::string& s)
     // Dynamic getter by string key
     std::string HnswConfig::get(const std::string& key) const {
         // size_t fields
+        if (key == "insertion_policy") {
+            switch (insertion_policy) {
+                case InsertionPolicy::Immediate: return "Immediate";
+                case InsertionPolicy::Deferred: return "Deferred";
+                case InsertionPolicy::Adaptive: return "Adaptive";
+            }
+        }
+        if (key == "cache_size") return cache_size ? std::to_string(cache_size) : "auto";
         if (key == "max_elements") return std::to_string(max_elements);
         if (key == "M") return std::to_string(M);
         if (key == "ef_construction") return std::to_string(ef_construction);
