@@ -1168,6 +1168,7 @@ std::vector<size_t> BertIndex::find_labels_by_sid(int64_t sid) const
 
 
 void BertIndex::remove(size_t label) {
+    ensure_graph(true, cfg.max_elements);
     index->markDelete(label);
 
     // clear offset entry
@@ -1182,6 +1183,7 @@ void BertIndex::remove(size_t label) {
 
 
 size_t BertIndex::removeDeletedElements(std::function<bool(size_t)>isDeleted) {
+  ensure_graph(true, cfg.max_elements);
   const size_t deleted = index->updateDeletedElements(isDeleted);
   if (deleted) {
     LOG_INFO_S() << "Deleted " << deleted << " elements from vector db";
@@ -1194,6 +1196,7 @@ size_t BertIndex::removeDeletedElements(std::function<bool(size_t)>isDeleted) {
 
 
 void BertIndex::undelete(size_t label, const OffsetEntry &entry) {
+    ensure_graph(true, cfg.max_elements);
     // restore offset entry
     offsets->set(label, entry);
 
