@@ -186,6 +186,7 @@ public:
     InsertionPolicy get_insertion_policy() const { return insertion_policy; }
     void set_adaptive_defer(bool defer);
     size_t pending_vectors() const { return deferred_count; }
+    bool graph_resident() const { return index && index->has_graph(); }
     void flush_deferred();
     void flush();
     void save();
