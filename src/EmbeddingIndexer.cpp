@@ -391,8 +391,8 @@ PIRSET EmbeddingIndexer::search(const STRING &fieldname, const STRING &query)
 
             size_t distinct_hits = 0;
             GPTYPE last_gp = 0;
-            std::decay_t<decltype(hits[k].span)> last_span = 0;
-            float max_score = hits[k].score * boost;
+            auto last_span = hits[k].span;
+            auto max_score = hits[k].score * boost;
             for (size_t n = k; n < next; ++n) {
                 const auto& r = hits[n];
                 max_score = std::max(max_score, r.score * boost);
