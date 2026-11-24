@@ -414,7 +414,7 @@ PIRSET EmbeddingIndexer::search(const STRING &fieldname, const STRING &query)
         }
 
         // GP order does not imply score order (or necessarily MDT index order).
-        pirset->SortByIndex();
+        pirset->SortBy(ByIndex);
         return deleted_count;
     };
 
