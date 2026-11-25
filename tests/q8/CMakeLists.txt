@@ -32,3 +32,9 @@ foreach(test_target test_q8_passthrough test_float_passthrough)
 endforeach()
 add_test(NAME q8_passthrough COMMAND test_q8_passthrough)
 add_test(NAME float_passthrough COMMAND test_float_passthrough)
+
+# Header-only storage parity: runs the active architecture's SIMD path.
+add_executable(test_simd_storage ../test_simd_storage.cpp)
+target_compile_features(test_simd_storage PRIVATE cxx_std_20)
+target_include_directories(test_simd_storage PRIVATE ../../include)
+add_test(NAME simd_storage COMMAND test_simd_storage)
