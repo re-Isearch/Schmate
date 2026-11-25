@@ -2,6 +2,7 @@
 // Compile normally on x86 with -mavx2, on AArch64 with NEON, and without SIMD.
 // Expected bytes are produced independently of the implementation under test.
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
