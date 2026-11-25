@@ -1011,6 +1011,8 @@ private:
         float dot_product = 0;
 
         if (bin_mode_ == OptBinMode::PASS) {
+	  if (IntStorage::is_floating_storage(storage_type_))
+              return float(1.0 - IntStorage::floating_inner_product(storage_type_, a, b, dim_));
 	  int bits = hnswlib::IntStorage::bits_per_element(storage_type_);
 	  return compute_dist_pass(bits, a, b, dim_); 
         }
