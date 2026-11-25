@@ -173,6 +173,8 @@ private:
         std::cout << "  quit / q             - Exit (prompts if unsaved)\n";
         std::cout << "  quit! / q!           - Exit without saving\n";
         std::cout << "\nExamples:\n";
+        std::cout << "  set insertion_policy Deferred  (Immediate, Deferred, Adaptive)\n";
+        std::cout << "  set cache_size 64          (0 or auto = automatic)\n";
         std::cout << "  set max_elements 100000\n";
         std::cout << "  set metric Cosine\n";
         std::cout << "  set debug true\n";

@@ -17,6 +17,9 @@
 #include <fstream>
 #include <iostream>
 #include <atomic>
+#include <cstdint>
+#include <vector>
+#include <fstream>
 
 struct SearchResult {
     float score;
@@ -76,11 +79,23 @@ friend class ShardedIndex;
 
     size_t dirty_count = 0;
 
+    InsertionPolicy insertion_policy = InsertionPolicy::Immediate;
+    bool adaptive_defer = false; // Chosen by the caller before admitting a graph.
+    std::string deferred_path;
+    size_t deferred_count = 0;
+    size_t persisted_count = 0;
+    void ensure_graph(bool for_insert, size_t capacity = 0);
+    std::ofstream deferred_out;
+    void add_or_defer(const float* vector, hnswlib::labeltype label);
+    void replay_deferred();
+    void drop_deferred();
+
     void *opaque_ptr = nullptr; // This is for the SentenceStore;
 
 public:
     BertIndex(SBertGGML & emb, hnswlib::HnswConfig & c, const std::string & n,
-	bool searchOnly = false, void *ptr = nullptr);
+	bool searchOnly = false, void *ptr = nullptr,
+        InsertionPolicy policy = InsertionPolicy::Immediate);
     ~BertIndex();
 
     const std::string      model_ident() const;
@@ -164,11 +179,17 @@ public:
 
     void clear(); // Zap the contents and reset everything
 
+    void set_insertion_policy(InsertionPolicy policy);
+    InsertionPolicy get_insertion_policy() const { return insertion_policy; }
+    void set_adaptive_defer(bool defer);
+    size_t pending_vectors() const { return deferred_count; }
+    bool graph_resident() const { return index && index->has_graph(); }
+    void flush_deferred();
     void flush();
     void save();
 //  void load();
 
-    size_t size() const { return index ? (size_t) index->size() : 0; }
+    size_t size() const { return index && index->has_graph() ? index->size() : persisted_count; }
 
     std::string get_text_by_label(size_t label) const;
     std::string reconstruct_label(size_t label) const { return get_text_by_label(label);}

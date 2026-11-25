@@ -33,6 +33,8 @@ This is the bridge re-Isearch <--> Schmate. This is the basis for DeepQuarry.
 #include "EmbeddingIndexer.hpp"
 #include "unified_hnsw.hpp"
 
+#include <algorithm>
+
 #ifdef MT_DELETE
 #include <future>
 #endif
@@ -56,6 +58,14 @@ static const char default_model[] = "sbert.ggml";
 #endif
 
 static const char search_path[] = PLATFORM_MODELS_PATH;
+
+#if 1 /* MEMORY DEBUG */
+static void log_vector_free_memory(const char *stage)
+{
+    message_log(LOG_INFO, "[VectorMem] %s: IB free = %llu MiB",
+                stage, static_cast<unsigned long long>(_IB_GetFreeMemory() / (1024 * 1024)));
+}
+#endif
 
 #ifdef DEBUG
 
@@ -200,6 +210,9 @@ EmbeddingIndexer::EmbeddingIndexer(IDBOBJ *Parent_, const STRING& Datatype, bool
   }
  }
   dim = embedder ? embedder->embedding_dim() : 0;
+#if 1 /* MEMORY DEBUG */
+  log_vector_free_memory("after embedding indexer initialization");
+#endif
 }
 
 bool EmbeddingIndexer::Ok() const
@@ -328,42 +341,80 @@ PIRSET EmbeddingIndexer::search(const STRING &fieldname, const STRING &query)
 
     if (pirset == nullptr) return nullptr; // Make sure allocated.. 
 
-    auto process_results = [&](const auto& results) -> size_t {
+    auto process_results = [&](auto& hits) -> size_t {
         MDTREC mdtrec;
-        IRESULT::hit_type     fc;
+        IRESULT::hit_type fc;
         size_t deleted_count = 0;
+        const PMDT mainMdt = Parent->GetMainMdt();
 
-        pirset->Clear();  // reuse the allocation
-        // Since we are adding by a sorted results.. can inform the irset..
-        pirset->setSortedByScore();
+        pirset->Clear();  // Reuse the allocation.
+        // HNSW ranks vectors, not MDT records. Batch by global address first.
+        std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) {
+            if (a.sentence_id != b.sentence_id)
+                return a.sentence_id < b.sentence_id;
+            return a.span < b.span;
+        });
 
-        for (const auto& r : results) {
-            const GPTYPE gp = r.sentence_id;
-            size_t w = Parent->GetMainMdt()->LookupByGp(gp);
-            if (w == 0) continue;
-
-            if (!Parent->GetMainMdt()->GetEntry(w, &mdtrec)) continue;
-
-            if (mdtrec.GetDeleted()) {
-#ifdef GC_DEL
-                index->remove(r.label, r.shard);
-#endif
-                deleted_count++;
+        for (size_t k = 0; k < hits.size();) {
+            const GPTYPE gp = hits[k].sentence_id;
+            FC recordRange;
+            const size_t w = mainMdt->LookupByGp(gp, &recordRange);
+            if (w == 0) {
+                ++k;
                 continue;
             }
 
-#if 1
+            // As in TermSearch, all hits in this record are now adjacent.
+            size_t next = k + 1;
+            while (next < hits.size() &&
+                   hits[next].sentence_id <= recordRange.GetFieldEnd())
+                ++next;
+
+            if (!mainMdt->GetEntry(w, &mdtrec)) {
+                k = next;
+                continue;
+            }
+
+            if (mdtrec.GetDeleted()) {
+#ifdef GC_DEL
+                for (size_t n = k; n < next; ++n)
+                    index->remove(hits[n].label, hits[n].shard);
+#endif
+                deleted_count += next - k;
+                k = next;
+                continue;
+            }
+
             idx.SetMdtIndex(w);
             iresult.SetIndex(idx);
-#else
-            iresult.SetMdtIndex(w);
-#endif
-            iresult.SetScore(r.score * boost);
-            fc.SetFieldStart(gp);
-            fc.SetFieldEnd(gp + r.span);
-            iresult.SetHitTable(fc);
-            pirset->FastAddEntry(iresult); // Can add fast since we are building from scratch
+            iresult.ClearHitTable();
+
+            size_t distinct_hits = 0;
+            GPTYPE last_gp = 0;
+            auto last_span = hits[k].span;
+            auto max_score = hits[k].score * boost;
+            for (size_t n = k; n < next; ++n) {
+                const auto& r = hits[n];
+                max_score = std::max(max_score, r.score * boost);
+                // Overlapping embedding chunks may refer to the same context.
+                if (distinct_hits && r.sentence_id == last_gp && r.span == last_span)
+                    continue;
+
+                fc.SetFieldStart(r.sentence_id);
+                fc.SetFieldEnd(r.sentence_id + r.span);
+                iresult.AddToHitTable(fc);
+                ++distinct_hits;
+                last_gp = r.sentence_id;
+                last_span = r.span;
+            }
+            iresult.SetHitCount(distinct_hits);
+            iresult.SetScore(max_score);
+            pirset->FastAddEntry(iresult);
+            k = next;
         }
+
+        // GP order does not imply score order (or necessarily MDT index order).
+        pirset->SortBy(ByIndex);
         return deleted_count;
     };
 
@@ -461,7 +512,21 @@ std::vector<SearchResult> EmbeddingIndexer::search(const std::string &filename, 
 */
 
 
-EmbeddingIndexer::~EmbeddingIndexer() = default;
+EmbeddingIndexer::~EmbeddingIndexer()
+{
+#if 1 /* MEMORY DEBUG */
+    log_vector_free_memory("before deferred graph replay / manager release");
+#endif
+    // Manager owns indexes and flushes queued vectors; it references the embedder.
+    manager.reset();
+#if 1 /* MEMORY DEBUG */
+    log_vector_free_memory("after manager release");
+#endif
+    embedder.reset();
+#if 1 /* MEMORY DEBUG */
+    log_vector_free_memory("after embedding model release");
+#endif
+}
 
 
 const char * EmbeddingIndexer::Description()

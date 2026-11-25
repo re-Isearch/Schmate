@@ -252,8 +252,8 @@ float BertIndex::score_from_dist(float dist) const {
 }
 
 // n + ext = path of the index 
-BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, void *ptr) :
-	embedder(emb), cfg(c), name(n), searchOnly(s), opaque_ptr(ptr)
+BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, void *ptr, InsertionPolicy policy) :
+	embedder(emb), cfg(c), name(n), insertion_policy(policy), searchOnly(s), opaque_ptr(ptr)
 {
     size_t max_elements = cfg.max_elements;
 
@@ -270,6 +270,7 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     sentences_path = full_storage_path(name + IndexFileExtensions::sentences);
     offsets_path   = full_storage_path(name + IndexFileExtensions::offsets);
     index_path     = full_storage_path(name + IndexFileExtensions::hnsw);
+    deferred_path  = index_path + ".deferred";
 
 
     search_ctrl.adaptive_ef = cfg.auto_tune_ef;
@@ -285,9 +286,11 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
     LOG_DEBUG_S() << "BertIndex: Bin_mode is " << bin_mode_to_string(meta.bin_mode_) << "\n";
 
     index = std::make_unique<hnswlib::UnifiedIndex>(meta);
-    if (UnifiedIndex::index_available( index_path ) ) {
-       index->loadIndex(index_path);
-       next_label = size(); // Nov 2026: Need to update the next_label for appends
+    if (UnifiedIndex::index_available(index_path) &&
+        (searchOnly || insertion_policy == InsertionPolicy::Immediate)) {
+       index->loadIndex(index_path, searchOnly);
+       next_label = size();
+       persisted_count = size();
     }
     metric = index->get_metric();
 
@@ -305,6 +308,31 @@ BertIndex::BertIndex(SBertGGML & emb, HnswConfig & c, const string & n, bool s, 
      }
   }
   offsets = std::make_unique<OffsetFile>(offsets_path, max_elements);
+   if (!searchOnly && !index->has_graph() && UnifiedIndex::index_available(index_path)) {
+       // Offset entries provide the reserved labels without loading the graph.
+       offsets->for_each([&](size_t label, const OffsetEntry &entry) {
+           if (entry.is_valid()) {
+               ++persisted_count;
+               next_label = std::max(next_label, label + 1);
+           }
+       });
+   }
+   const auto queued_bytes = file_size(deferred_path);
+   const size_t stride = sizeof(uint64_t) + embedder.n_embd * sizeof(float);
+   if (!searchOnly && queued_bytes > 0) {
+       if (stride == 0 || static_cast<size_t>(queued_bytes) % stride)
+           throw std::runtime_error("Invalid deferred vector queue length: " + deferred_path);
+       deferred_count = static_cast<size_t>(queued_bytes) / stride;
+       std::ifstream in(deferred_path, std::ios::binary);
+       std::vector<float> ignored(embedder.n_embd);
+       for (size_t n = 0; n < deferred_count; ++n) {
+           uint64_t label = 0;
+           in.read(reinterpret_cast<char*>(&label), sizeof(label));
+           in.read(reinterpret_cast<char*>(ignored.data()), ignored.size() * sizeof(float));
+           if (!in) throw std::runtime_error("Cannot scan deferred vector queue");
+           next_label = std::max(next_label, static_cast<size_t>(label + 1));
+       }
+   }
 
   if (cfg.debug && !searchOnly && !offsets->validate_offsets(/*fix=*/true))
      LOG_WARN_S() << "Offset file contained invalid entries; they were reset.";
@@ -340,6 +368,8 @@ void BertIndex::clear() {
     }
 
     close_sentences();
+
+    drop_deferred();
 
     // --- Step 2: Remove existing files ---
     auto try_remove = [&](const std::string &path) {
@@ -377,6 +407,7 @@ void BertIndex::clear() {
     next_label = 0;
     while (!free_labels.empty()) free_labels.pop();  // clear all recycled labels
     dirty_count = 0;
+    persisted_count = 0;
     auto_sentence_id = 0;
 
     // --- Step 5: Optionally persist meta, hyperparameters etc ---
@@ -391,13 +422,13 @@ void BertIndex::clear() {
 
 BertIndex::~BertIndex() {
     search_ctrl.save(name);
-    close_sentences();
     try {
-        flush(); // persist any unsaved changes
+        flush(); // Replay queued points and persist before closing the sentence store.
         remove_lockfile(); // We ignore if it fails since it is probably 0 from another process
     } catch (...) {
         // destructor should not throw
     }
+    close_sentences();
 }
 
 
@@ -903,7 +934,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
                 case _arrays:  emb = schmate_util::floatArrayToFloat32(chunk.text); break;
                 default: break;
             }
-            index->addPoint(emb.data(), (hnswlib::labeltype)(label));
+            add_or_defer(emb.data(), (hnswlib::labeltype)(label));
         } else {
             auto &emb = embeddings[ci];
 
@@ -920,7 +951,7 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
 	      return label;
             }
 	    // OK: Add point
-            index->addPoint(emb.data(), (hnswlib::labeltype)(label));
+            add_or_defer(emb.data(), (hnswlib::labeltype)(label));
         }
 
         // --- Write OffsetEntry into mmap ---
@@ -954,8 +985,8 @@ size_t BertIndex::append(const std::string_view sentence, int64_t sentence_id, u
     }
 
     dirty_count++;
-    if (dirty_count >= cfg.flush_threshold) {
-        // dirty_count triggers index flush: used to throttle HNSW saves
+    if (dirty_count >= cfg.flush_threshold && deferred_count == 0) {
+        // Explicit flush/finalization drains the deferred queue.
         flush();
     }
 
@@ -1137,6 +1168,8 @@ std::vector<size_t> BertIndex::find_labels_by_sid(int64_t sid) const
 
 
 void BertIndex::remove(size_t label) {
+    if (deferred_count) flush(); // A queued label must exist before it can be deleted.
+    ensure_graph(true, std::max<size_t>(1, next_label));
     index->markDelete(label);
 
     // clear offset entry
@@ -1151,6 +1184,8 @@ void BertIndex::remove(size_t label) {
 
 
 size_t BertIndex::removeDeletedElements(std::function<bool(size_t)>isDeleted) {
+  if (deferred_count) flush();
+  ensure_graph(true, std::max<size_t>(1, next_label));
   const size_t deleted = index->updateDeletedElements(isDeleted);
   if (deleted) {
     LOG_INFO_S() << "Deleted " << deleted << " elements from vector db";
@@ -1163,6 +1198,8 @@ size_t BertIndex::removeDeletedElements(std::function<bool(size_t)>isDeleted) {
 
 
 void BertIndex::undelete(size_t label, const OffsetEntry &entry) {
+    if (deferred_count) flush();
+    ensure_graph(true, std::max<size_t>(1, next_label));
     // restore offset entry
     offsets->set(label, entry);
 
@@ -1263,8 +1300,97 @@ void BertIndex::undelete(size_t label) {
 }
 #endif
 
+void BertIndex::ensure_graph(bool for_insert, size_t capacity) {
+    if (!index) throw std::runtime_error("No unified index");
+    if (index->has_graph()) {
+        if (for_insert && capacity) index->reserve_capacity(capacity);
+        return;
+    }
+    if (UnifiedIndex::index_available(index_path)) {
+        if (!index->loadIndex(index_path, !for_insert, for_insert ? capacity : 0))
+            throw std::runtime_error("Cannot reload graph: " + index_path);
+    } else if (for_insert) {
+        index->reserve_capacity(capacity ? capacity : cfg.max_elements);
+    }
+    if (index->has_graph()) persisted_count = index->size();
+}
+
+void BertIndex::set_insertion_policy(InsertionPolicy policy) {
+    if (searchOnly && policy != InsertionPolicy::Immediate)
+        throw std::logic_error("Cannot defer insertions in a search-only index");
+    if (policy != insertion_policy && deferred_count)
+        flush();
+    insertion_policy = policy;
+    if (policy == InsertionPolicy::Deferred && index && index->has_graph() && size()) {
+        if (!index->flush_and_release(index_path))
+            throw std::runtime_error("Cannot release graph after switching to deferred mode");
+    }
+}
+
+void BertIndex::set_adaptive_defer(bool defer) {
+    if (insertion_policy != InsertionPolicy::Adaptive)
+        throw std::logic_error("Adaptive admission is not enabled");
+    if (!defer && deferred_count)
+        flush();
+    adaptive_defer = defer;
+}
+
+void BertIndex::add_or_defer(const float* vector, hnswlib::labeltype label) {
+    const bool defer = insertion_policy == InsertionPolicy::Deferred ||
+                       (insertion_policy == InsertionPolicy::Adaptive && adaptive_defer);
+    if (!defer) {
+        ensure_graph(true, cfg.max_elements);
+        index->addPoint(vector, label);
+        return;
+    }
+    if (!deferred_out.is_open()) {
+        deferred_out.open(deferred_path, std::ios::binary | std::ios::app);
+        if (!deferred_out) throw std::runtime_error("Cannot open deferred vector queue: " + deferred_path);
+    }
+    const uint64_t stored_label = static_cast<uint64_t>(label);
+    deferred_out.write(reinterpret_cast<const char*>(&stored_label), sizeof(stored_label));
+    deferred_out.write(reinterpret_cast<const char*>(vector), embedder.n_embd * sizeof(float));
+    if (!deferred_out) throw std::runtime_error("Cannot write deferred vector queue: " + deferred_path);
+    ++deferred_count;
+}
+
+void BertIndex::replay_deferred() {
+    if (!deferred_count) return;
+    if (deferred_out.is_open()) {
+        deferred_out.flush();
+        if (!deferred_out) throw std::runtime_error("Cannot flush deferred vector queue");
+        deferred_out.close();
+    }
+    ensure_graph(true, std::max<size_t>(1, std::min(cfg.max_elements, next_label)));
+    std::ifstream in(deferred_path, std::ios::binary);
+    if (!in) throw std::runtime_error("Cannot read deferred vector queue: " + deferred_path);
+    std::vector<float> vector(embedder.n_embd);
+    for (size_t n = 0; n < deferred_count; ++n) {
+        uint64_t label = 0;
+        in.read(reinterpret_cast<char*>(&label), sizeof(label));
+        in.read(reinterpret_cast<char*>(vector.data()), vector.size() * sizeof(float));
+        if (!in) throw std::runtime_error("Truncated deferred vector queue: " + deferred_path);
+        index->addPoint(vector.data(), static_cast<hnswlib::labeltype>(label));
+    }
+}
+
+void BertIndex::drop_deferred() {
+    if (deferred_out.is_open()) deferred_out.close();
+    if (deferred_count) {
+        std::error_code ec;
+        std::filesystem::remove(deferred_path, ec);
+        if (ec) {
+            LOG_ERROR_S() << "Cannot remove deferred vector queue " << deferred_path << ": " << ec.message();
+            return;
+        }
+        deferred_count = 0;
+    }
+}
+
+void BertIndex::flush_deferred() { flush(); }
+
 void BertIndex::flush() {
-  if (dirty_count) {
+  if (dirty_count || deferred_count) {
     // Flush offsets ONLY if not already sync'd 
     if (!cfg.flush_offsets_each && offsets)
       offsets->flush(); // msync during add
@@ -1279,20 +1405,26 @@ void BertIndex::flush() {
 }
 
 void BertIndex::save() {
-
-// Rewrites entire index: normally done in batches after X inserts
+  if (deferred_count) replay_deferred();
+  const bool deferred = insertion_policy == InsertionPolicy::Deferred ||
+                        (insertion_policy == InsertionPolicy::Adaptive && adaptive_defer);
   if (size() > 0) {
-     if (index && !index->saveIndex(index_path)) {
+     if (dirty_count && !index->has_graph()) ensure_graph(true, cfg.max_elements);
+     const size_t count = index->has_graph() ? index->size() : persisted_count;
+     const bool ok = deferred ? index->flush_and_release(index_path)
+                              : index->saveIndex(index_path);
+     if (!ok) {
          LOG_ERROR_S() << "Could not save index " << index_path;
          release_lock();
-         return; // Preserve dirty_count so a later flush can retry.
+         return;
      }
-  } else if (file_size(index_path) >= 0) {
-      // since != -1 we know it exists
+     persisted_count = count;
+  } else if (file_size(index_path) >= 0 && !deferred_count) {
       unlink(index_path.c_str());
   }
-  dirty_count = 0; // Memory = disk
-  if (cfg.debug)  LOG_DEBUG_S() << "saved index " << index_path;
+  if (deferred_count) drop_deferred();
+  dirty_count = 0;
+  if (cfg.debug) LOG_DEBUG_S() << "saved index " << index_path;
   release_lock();
 }
 
@@ -1323,7 +1455,8 @@ std::vector<SearchResult> BertIndex::filter_knn_results(const std::string &query
 std::vector<std::pair<float, hnswlib::labeltype>> BertIndex::search_candidates(
     const std::string& query, size_t max_k) {
     if (size() == 0 || !is_valid_query(query))
-        return {}; // Nothing to do 
+        return {}; // Nothing to do
+    ensure_graph(false); 
 
     BaseFilterFunctor* isIdAllowed = nullptr; // No filter at this time
     // std::cerr << "QUERY=" << query << std::endl;
@@ -1480,6 +1613,7 @@ std::vector<SearchResult> BertIndex::epsilon_search(const std::string &query, fl
     size_t cur_count = size(); // index->cur_element_count;
     if (cur_count == 0 || !is_valid_query(query) )
         return {}; // Empty index or invalid query
+    ensure_graph(false);
 
     size_t min_candidates = std::min(cfg.min_candidates, cur_count);
     size_t max_candidates = cfg.max_candidates_cap > 0
@@ -1690,10 +1824,10 @@ std::string BertIndex::get_text_by_label(size_t label) const {
 
 
 int64_t BertIndex::get_sentence_id(size_t label) const {
-    auto it = chunk_sentence_map.find(label);
-    if (it == chunk_sentence_map.end())
-        return -1;
-    return it->second;
+    // The active append path stores SIDs in the mmap-backed OffsetFile.
+    // chunk_sentence_map belongs to the older, inactive append implementation.
+    const OffsetEntry* entry = offsets ? offsets->get_mut(label) : nullptr;
+    return entry && entry->is_valid() ? entry->sid : -1;
 }
 
 
@@ -1830,6 +1964,12 @@ int BertIndex::unlink(const std::string &path)
           if (::unlink(s.c_str()) == -1)
             errors++;
         }
+    }
+
+    const std::string queue = path + IndexFileExtensions::hnsw + ".deferred";
+    if (file_exists(queue)) {
+        ++saw;
+        if (::unlink(queue.c_str()) == -1) ++errors;
     }
 
     if (saw == 0) return -1;

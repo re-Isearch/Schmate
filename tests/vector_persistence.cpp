@@ -1,4 +1,6 @@
 #include "unified_hnsw.hpp"
+#include "LRUCache.hpp"
+#include "BertIndex.hpp"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -108,6 +110,45 @@ static bool has_label(UnifiedIndex& index, const float* query, labeltype label)
     return false;
 }
 
+static void cache_budget_regressions()
+{
+    struct Sample { size_t bytes; };
+    LRUCache<int, Sample> cache(100, nullptr, 100,
+        [](const std::shared_ptr<Sample>& item) { return item->bytes; });
+    cache.put(1, std::make_shared<Sample>(Sample{60}));
+    cache.put(2, std::make_shared<Sample>(Sample{60}));
+    require(!cache.contains(1) && cache.contains(2),
+            "byte-budget LRU evicts oldest index");
+    cache.put(3, std::make_shared<Sample>(Sample{180}));
+    require(cache.size() == 1 && cache.contains(3),
+            "oversized active graph remains cached alone");
+    cache.put(4, std::make_shared<Sample>(Sample{20}));
+    require(cache.size() == 1 && cache.contains(4),
+            "smaller graph replaces oversized entry");
+}
+
+static void search_only_capacity_regressions()
+{
+    UnifiedIndexMeta meta = float_meta();
+    meta.max_elements_ = 500000; // Sharding limit, not the search working set.
+    const float a[]{1, 0}, b[]{0, 1};
+    UnifiedIndex writer(meta);
+    writer.addPoint(a, 1);
+    writer.addPoint(b, 2);
+    require(writer.saveIndex("search-only-capacity.hnsw"), "save sparse HNSW graph");
+
+    UnifiedIndex reader(meta);
+    require(reader.loadIndex("search-only-capacity.hnsw", true), "load sparse graph for search");
+    require(reader.size() == 2, "search-only load preserves element count");
+    require(reader.get_meta().max_elements_ == 2, "search-only load uses populated capacity");
+    require(has_label(reader, a, 1) && has_label(reader, b, 2), "search-only graph remains searchable");
+
+    UnifiedIndex writable(meta);
+    require(writable.loadIndex("search-only-capacity.hnsw", false), "writable load");
+    require(writable.get_meta().max_elements_ == meta.max_elements_,
+            "writable load retains shard capacity");
+}
+
 static void dirty_state_regressions()
 {
     const float a[]{1, 0}, b[]{0, 1};
@@ -200,12 +241,89 @@ static void rescore_metric_regressions()
             "L2 rescoring retains squared-distance units");
 }
 
+
+static void deferred_insertion_regressions()
+{
+    SBertGGML embedder(2); // Raw vector test: no model required.
+    HnswConfig cfg;
+    cfg.max_elements = 8;
+    cfg.flush_threshold = 1; // Deferred entries must survive automatic flush threshold.
+
+    for (const auto policy : {InsertionPolicy::Immediate, InsertionPolicy::Deferred,
+                              InsertionPolicy::Adaptive}) {
+        const std::string base = policy == InsertionPolicy::Immediate ? "points-immediate" :
+                                 policy == InsertionPolicy::Deferred  ? "points-deferred" :
+                                                                       "points-adaptive";
+        BertIndex::unlink(base);
+        {
+            BertIndex graph(embedder, cfg, base, false, nullptr, policy);
+            graph.set_insertion_policy(policy);
+            if (policy == InsertionPolicy::Adaptive) graph.set_adaptive_defer(true);
+            graph.append("[1.0, 0.0]", 100);
+            graph.append("[0.0, 1.0]", 101);
+            if (policy != InsertionPolicy::Immediate) {
+                require(!graph.graph_resident(), "deferred insertion never allocated a graph");
+                require(graph.pending_vectors() == 2, "deferred queue holds both labels");
+                require(graph.size() == 0, "deferred vectors not yet in HNSW");
+            }
+            graph.flush_deferred();
+            require(graph.pending_vectors() == 0, "flush drains deferred queue");
+            require(graph.size() == 2, "both vectors inserted after flush");
+            if (policy != InsertionPolicy::Immediate)
+                require(!graph.graph_resident(), "first replay released graph memory");
+            require(graph.label_count() == 2, "original labels retained");
+            require(graph.get_sentence_id(0) == 100 && graph.get_sentence_id(1) == 101,
+                    "offset mapping retained during replay");
+            if (policy != InsertionPolicy::Immediate) {
+                // A released graph must be reloaded, extended and saved again.
+                graph.append("[1.0, 1.0]", 102);
+                graph.append("[2.0, 1.0]", 103);
+                require(graph.pending_vectors() == 2, "second batch queued without graph");
+                require(!graph.graph_resident(), "repeated appends do not load graph");
+                graph.flush_deferred();
+                require(graph.size() == 4, "second batch extends the original graph");
+                require(graph.pending_vectors() == 0, "second flush drains the queue");
+                require(!graph.graph_resident(), "second replay released graph memory");
+                require(graph.get_sentence_id(2) == 102 && graph.get_sentence_id(3) == 103,
+                        "second batch preserves new offset entries");
+            }
+        }
+        if (policy != InsertionPolicy::Immediate) {
+            BertIndex resumed(embedder, cfg, base, false, nullptr, policy);
+            if (policy == InsertionPolicy::Adaptive) resumed.set_adaptive_defer(true);
+            require(!resumed.graph_resident(), "deferred writable reopen does not load HNSW");
+            require(resumed.size() == 4, "deferred reopen retains population");
+            resumed.append("[3.0, 1.0]", 104);
+            require(resumed.pending_vectors() == 1, "deferred append after reopen queued one vector");
+            require(!resumed.graph_resident(), "deferred append after reopen stays disk-only");
+            resumed.flush_deferred();
+            require(!resumed.graph_resident() && resumed.size() == 5,
+                    "third batch replayed and released");
+        }
+        {
+            BertIndex restored(embedder, cfg, base, true);
+            const size_t expected = policy == InsertionPolicy::Immediate ? 2 : 5;
+            require(restored.size() == expected, "all deferred batches survive reload");
+            require(restored.get_sentence_id(0) == 100 && restored.get_sentence_id(1) == 101,
+                    "original labels and offsets survive reload");
+            if (expected == 5) {
+                require(restored.get_sentence_id(2) == 102 && restored.get_sentence_id(3) == 103,
+                        "second batch survives reload");
+                require(restored.get_sentence_id(4) == 104, "third batch survives reload");
+            }
+        }
+    }
+}
+
 int main()
 {
     storage_regressions(true);
     storage_regressions(false);
     delta_replay_regressions(VectorStorageMode::IN_MEMORY);
     delta_replay_regressions(VectorStorageMode::MEMORY_MAPPED);
+    cache_budget_regressions();
+    deferred_insertion_regressions();
+    search_only_capacity_regressions();
     dirty_state_regressions();
     mapped_rescoring_regressions();
     rescore_metric_regressions();

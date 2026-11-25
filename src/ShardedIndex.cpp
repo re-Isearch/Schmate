@@ -38,7 +38,9 @@ size_t ShardedIndex::discover_shards(const std::string &base_name) const {
 }
 
 void ShardedIndex::add_shard(size_t id, bool searchOnly) {
-    auto shard = make_unique<BertIndex>(embedder, cfg, shard_basename(id), searchOnly, opaque_ptr) ;
+    auto shard = make_unique<BertIndex>(embedder, cfg, shard_basename(id), searchOnly, opaque_ptr, insertion_policy) ;
+    shard->set_insertion_policy(insertion_policy);
+    if (insertion_policy == InsertionPolicy::Adaptive) shard->set_adaptive_defer(adaptive_defer);
     if (!base_dir.empty()) shard->set_storage_path_dir(base_dir);
     shards.emplace_back(std::move(shard));
     // For the shard based auto-tuner
@@ -47,7 +49,7 @@ void ShardedIndex::add_shard(size_t id, bool searchOnly) {
 
 // Creator
 ShardedIndex::ShardedIndex(SBertGGML & emb, HnswConfig & c, const string & name,
-	bool searchOnly, void *ptr) : embedder(emb), cfg(c), base_name(name), opaque_ptr(ptr) {
+	bool searchOnly, void *ptr, InsertionPolicy policy) : embedder(emb), cfg(c), base_name(name), opaque_ptr(ptr), insertion_policy(policy) {
     size_t found = discover_shards(base_name);
     if (found == 0) {
         if (searchOnly) {
@@ -79,7 +81,7 @@ BertIndex & ShardedIndex::current_shard() {
     lock_guard<mutex> lock(mtx);
     if (shards.empty()) throw runtime_error("No shards");
     auto &sh = shards.back();
-    if (sh->size() >= cfg.max_elements) {
+    if (sh->label_count() >= cfg.max_elements) {
         add_shard(shards.size());
     }
     return *shards.back();
@@ -93,6 +95,28 @@ BertIndex & ShardedIndex::get_shard(size_t i) const {
 
 size_t ShardedIndex::shard_count() const {
     return shards.size();
+}
+
+size_t ShardedIndex::estimated_resident_bytes() const {
+    size_t total = 0;
+    for (const auto& shard : shards) {
+        // Search-only loads allocate for actual population, not cfg.max_elements.
+        if (shard->index && shard->index->has_graph()) total += shard->index->bytes_per_index();
+        total += shard->size() * sizeof(OffsetEntry);
+    }
+    return total;
+}
+
+void ShardedIndex::set_insertion_policy(InsertionPolicy policy) {
+    for (auto& shard : shards) shard->set_insertion_policy(policy);
+    insertion_policy = policy;
+}
+
+void ShardedIndex::set_adaptive_defer(bool defer) {
+    if (insertion_policy != InsertionPolicy::Adaptive)
+        throw std::logic_error("Adaptive admission is not enabled");
+    for (auto& shard : shards) shard->set_adaptive_defer(defer);
+    adaptive_defer = defer;
 }
 
 void ShardedIndex::append(const string_view sentence) {

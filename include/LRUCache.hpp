@@ -17,8 +17,12 @@ public:
     using value_ptr = std::shared_ptr<Value>;
     using deleter_t = std::function<void(const Key&, value_ptr)>;
 
-    explicit LRUCache(size_t capacity_, deleter_t on_evict_ = nullptr)
-        : capacity(capacity_), on_evict(on_evict_) {}
+    using weight_t = std::function<size_t(const value_ptr&)>;
+
+    explicit LRUCache(size_t capacity_, deleter_t on_evict_ = nullptr,
+                      size_t byte_budget_ = 0, weight_t weight_ = nullptr)
+        : capacity(capacity_), on_evict(on_evict_),
+          byte_budget(byte_budget_), weight(std::move(weight_)) {}
 
     value_ptr get(const Key &key) {
         std::lock_guard<std::mutex> lock(mu);
@@ -35,18 +39,19 @@ public:
         auto it = cache.find(key);
         if (it != cache.end()) {
             // Update value and move to front
+            used_bytes -= cost(it->second.first);
             it->second.first = val;
+            used_bytes += cost(val);
             usage.splice(usage.begin(), usage, it->second.second);
+            trim();
             return;
         }
 
         // New insertion
         usage.push_front(key);
         cache[key] = { val, usage.begin() };
-
-        if (cache.size() > capacity) {
-            evict_one();
-        }
+        used_bytes += cost(val);
+        trim();
     }
 
     bool contains(const Key &key) {
@@ -62,6 +67,13 @@ public:
         }
         cache.clear();
         usage.clear();
+        used_bytes = 0;
+    }
+
+    void set_capacity(size_t new_capacity) {
+        std::lock_guard<std::mutex> lock(mu);
+        capacity = new_capacity;
+        trim();
     }
 
     size_t size() const {
@@ -78,11 +90,21 @@ public:
 
 
 private:
+    size_t cost(const value_ptr& val) const {
+        return byte_budget && weight && val ? weight(val) : 0;
+    }
+    void trim() {
+        // Retain the single active index even if larger than the budget.
+        while (cache.size() > capacity ||
+               (byte_budget && used_bytes > byte_budget && cache.size() > 1))
+            evict_one();
+    }
     void evict_one() {
         if (usage.empty()) return;
         auto last = usage.back();
         auto it = cache.find(last);
         if (it != cache.end()) {
+            used_bytes -= cost(it->second.first);
             if (on_evict) on_evict(it->first, it->second.first);
             cache.erase(it);
         }
@@ -90,6 +112,9 @@ private:
     }
 
     size_t capacity;
+    size_t byte_budget = 0;
+    size_t used_bytes = 0;
+    weight_t weight;
     mutable std::mutex mu;
     std::list<Key> usage;
     std::unordered_map<Key, std::pair<value_ptr, typename std::list<Key>::iterator>> cache;
@@ -283,7 +308,7 @@ inline size_t est_bytes_per_vector(const hnswlib::HnswConfig &cfg, size_t dim)
 
    size_t base_total = vector_bytes + graph_bytes + per_node_overhead;
 
-   size_t total = static_cast<size_t>( total * (1.0 + extra_overhead_factor));
+   size_t total = static_cast<size_t>(base_total * (1.0 + extra_overhead_factor));
 
    // If rescoring is enabled then we need to add dim * sizeof(float);
 

@@ -23,6 +23,8 @@ private:
     hnswlib::HnswConfig cfg;
 
 public:
+    HnswConfigBuilder& with_insertion_policy(InsertionPolicy p) { cfg.insertion_policy = p; return *this; }
+    HnswConfigBuilder& with_cache_size(size_t n) { cfg.cache_size = n; return *this; }
     HnswConfigBuilder& with_max_elements(size_t n) { cfg.max_elements = n; return *this; }
     HnswConfigBuilder& with_M(size_t m) { cfg.M = m; return *this; }
     HnswConfigBuilder& with_ef_construction(size_t ef) { cfg.ef_construction = ef; return *this; }

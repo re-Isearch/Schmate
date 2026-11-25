@@ -544,7 +544,7 @@ public:
     bool save();
     bool saveIndex(const std::string& path);
     bool load(bool SearchOnly = false);
-    bool loadIndex(const std::string& path, bool SearchOnly = false);
+    bool loadIndex(const std::string& path, bool SearchOnly = false, size_t requested_capacity = 0);
 
     static bool index_available(const std::string& path) {
       auto length = file_size(path);
@@ -566,6 +566,11 @@ public:
     }
 
     bool flush();
+    // Adjust the next graph allocation (or grow a resident graph).
+    void reserve_capacity(size_t capacity);
+    // Save to path and release only the HNSW graph, retaining metadata.
+    bool flush_and_release(const std::string& path);
+    bool has_graph() const { return static_cast<bool>(index_); }
 
     // Get vector for rescoring
     const float* getOriginalVector(labeltype label) const;

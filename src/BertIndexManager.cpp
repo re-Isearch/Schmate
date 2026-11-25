@@ -59,12 +59,17 @@ ShardedIndex * BertIndexManager::get(const std::string &name, size_t id)
 
 BertIndexManager::BertIndexManager(SBertGGML & e, hnswlib::HnswConfig & c, size_t max_cached,
 		bool s, void *ptr) : embedder(e), cfg(c), searchOnly (s), opaque_ptr(ptr),
-		index_cache(max_cached, [](const std::string &key, std::shared_ptr<ShardedIndex> idx) {
+		insertion_policy(c.insertion_policy),
+		index_cache(s && HNSWCacheConfig::get_available_ram_bytes() ? 1000 :
+                    c.cache_size ? c.cache_size :
+                    (c.insertion_policy != InsertionPolicy::Immediate ? 64 : max_cached), [](const std::string &key, std::shared_ptr<ShardedIndex> idx) {
           if (idx) {
               LOG_INFO_S() << "Evicting index: " << key;
-              idx->flush();  // flush all shards before eviction
+              idx->flush();  // clean search-only shards do not write
           }
-      })
+      }, s ? static_cast<size_t>(HNSWCacheConfig::get_available_ram_bytes() *
+                                HNSWCacheConfig::MAX_RAM_USAGE_RATIO) : 0,
+      [](const std::shared_ptr<ShardedIndex>& idx) { return idx->estimated_resident_bytes(); })
 {}
 
 ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t identity)
@@ -73,7 +78,9 @@ ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t ide
     if (!idx) {
 
 //std::cerr << "CFG Storage XXXX = " << storage_type_to_string(cfg.storage_type()) << std::endl;
-        auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr);
+        InsertionPolicy policy = insertion_policy;
+        // Pass the policy before construction so existing .hix graphs stay unloaded.
+        auto new_index = std::make_shared<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, policy);
         index_cache.put(name, new_index);
 	new_index->set_base_dir(base_dir);
         return *new_index;
@@ -84,7 +91,7 @@ ShardedIndex & BertIndexManager::getOrCreate(const std::string &name, size_t ide
 
 #else /* NOT LRU_CACHE */
 BertIndexManager::BertIndexManager(SBertGGML & e, hnswlib::HnswConfig &c, bool s, void *ptr) :
-	embedder(e), cfg(c), searchOnly(s), opaque_ptr(ptr) {}
+	embedder(e), cfg(c), searchOnly(s), opaque_ptr(ptr), insertion_policy(c.insertion_policy) {}
 
 
 
@@ -92,7 +99,7 @@ ShardedIndex& BertIndexManager::getOrCreate(const std::string & name, size_t ide
     auto it = indexes.find(name);
     if (it != indexes.end()) return *it->second;
     // create new
-    indexes[name] = std::make_unique<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr);
+    indexes[name] = std::make_unique<ShardedIndex>(embedder, cfg, name, searchOnly, opaque_ptr, insertion_policy);
     indexes[name]->set_base_dir(base_dir);
 
     return *indexes[name];

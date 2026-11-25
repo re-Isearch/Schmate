@@ -16,16 +16,20 @@ class ShardedIndex {
     std::vector<std::unique_ptr<EfSearchTuner>> shard_tuners;
 
     void *opaque_ptr = nullptr; // This is passed to each BertIndex
+    InsertionPolicy insertion_policy = InsertionPolicy::Immediate;
+    bool adaptive_defer = false;
 
     mutable std::mutex mtx;
 
 public:
     ShardedIndex(SBertGGML & emb, hnswlib::HnswConfig & c, const std::string & name,
-	bool searchOnly = false, void *ptr = nullptr);
+	bool searchOnly = false, void *ptr = nullptr,
+        InsertionPolicy policy = InsertionPolicy::Immediate);
 
     BertIndex & current_shard();
     BertIndex & get_shard(size_t i) const;
     size_t shard_count() const;
+    size_t estimated_resident_bytes() const;
 
     void set_base_dir(std::string &dir) { base_dir = dir;  }
     std::string get_base_dir() const    { return base_dir; }
@@ -45,6 +49,8 @@ std::cerr << "Setting OPAQUE POINTER to " << (long long) ptr << std::endl;
         shard->set_opaque_ptr(ptr);
     }
 
+    void set_insertion_policy(InsertionPolicy policy);
+    void set_adaptive_defer(bool defer);
     void append(const std::string_view sentence);
     void append(const std::string_view sentence, int64_t sentence_id, uint32_t span = 0);
 

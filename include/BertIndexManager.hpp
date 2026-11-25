@@ -46,6 +46,7 @@ class BertIndexManager {
     bool                searchOnly;
     std::string         base_dir;
     void               *opaque_ptr;
+    InsertionPolicy insertion_policy = InsertionPolicy::Immediate;
 #if USE_LRUCACHE
     LRUCache<std::string, ShardedIndex> index_cache;
 #else
@@ -62,6 +63,7 @@ public:
 
     void set_base_dir(const std::string& new_dir) { base_dir = new_dir; }
     void set_opaque_ptr(void *ptr) { opaque_ptr = ptr; }
+    void set_insertion_policy(InsertionPolicy policy) { insertion_policy = policy; }
 
     void clear(const std::string &name);
 
