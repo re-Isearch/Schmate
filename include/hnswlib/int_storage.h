@@ -13,6 +13,10 @@
   #include <immintrin.h>
 #endif
 
+#if defined(__AVX2__)
+  #define USE_SIMD 1
+#endif
+
 #if defined(__AVX512FP16__)
   #define HAS_AVX512FP16 1
   #define USE_SIMD 1
@@ -156,13 +160,19 @@ static void quantize(StorageType type, const T* emb, uint8_t* out, size_t dim) {
             pack_int3_to(emb, out, dim);
             break;
         case StorageType::INT4:
-#if HAS_NEON 
-            pack_int4_neon(emb, out, dim);
-#elif defined(AVX2)
-            pack_int4_avx2(emb, out, dim);
+            // Both SIMD paths must match the scalar signed-nibble ABI.
+            // Non-float inputs use the scalar implementation.
+            if constexpr (std::is_same_v<T, float>) {
+#if defined(HAS_NEON)
+                pack_int4_neon(emb, out, dim);
+#elif defined(__AVX2__)
+                pack_int4_avx2(emb, out, dim);
 #else
-            pack_int4_to(emb, out, dim);
+                pack_int4_to(emb, out, dim);
 #endif
+            } else {
+                pack_int4_to(emb, out, dim);
+            }
             break;
 	case StorageType::FP4:
 	    pack_fp4_to(emb, out, dim);
@@ -179,21 +189,11 @@ static void quantize(StorageType type, const T* emb, uint8_t* out, size_t dim) {
         case StorageType::INT16:
             pack_int16_to(emb, out, dim);
             break;
-        case StorageType::FP16: {
-            auto* out16 = reinterpret_cast<uint16_t*>(out);
-            for (size_t i = 0; i < dim; ++i) {
-		// Cast emb[i] to float explicitly to handle T=double
-                float val = static_cast<float>(emb[i]);
-    #if defined(HAS_AVX512FP16)
-                out16[i] = _cvtss_sh(val, 0);
-    #elif defined(HAS_NEON_FP16)
-                out16[i] = vcvt_f16_f32(vdup_n_f32(val))[0];
-    #else
-                out16[i] = float_to_half_bits(val);
-    #endif
-	    }
+        case StorageType::FP16:
+            // Store the half bit-pattern, never a numerical conversion from
+            // float16_t to uint16_t (which corrupts NEON FP16 encodings).
+            pack_fp16_to(emb, out, dim);
             break;
-        }
 
        case StorageType::BF16:
 #if defined(__AVX512BF16__)
@@ -485,8 +485,10 @@ static void pack_int4_to(const T* src, uint8_t* out, size_t dim) {
     for (size_t i = 0; i < dim; i += 2) {
         auto q = [&](float val) {
             // SBERT elements are small; let's use the full signed range
-            int8_t v = (int8_t)std::round(val * SCALE);
-            return (int)std::max(-8, std::min(7, (int)v));
+            // Clamp before converting to an integer. Prevent overflow/wrap
+            // for out-of-range embeddings and preserve ties away from zero.
+            const float scaled = std::clamp(val * SCALE, -8.0f, 7.0f);
+            return static_cast<int>(std::round(scaled));
         };
         int q0 = q(src[i]);
         int q1 = (i + 1 < dim) ? q(src[i + 1]) : 0;
@@ -762,100 +764,60 @@ inline void pack_int16_to_avx2(const T* src, uint8_t* out, size_t dim) {
 #endif
 }
 
+// Signed INT4 packs two values per byte (low nibble first).
+// Match pack_int4_to: multiply by 64, clamp [-8,7], round ties AWAY from zero.
+#if defined(HAS_NEON)
 template<typename T>
 static void pack_int4_neon(const T* src, uint8_t* out, size_t dim) {
-#if HAS_NEON
-    float32x4_t vscale = vdupq_n_f32(64.0f);
-    int32x4_t vmin = vdupq_n_s32(-8);
-    int32x4_t vmax = vdupq_n_s32(7);
-
+    static_assert(std::is_same_v<T, float>, "NEON INT4 requires float input");
+    const float32x4_t scale = vdupq_n_f32(64.0f);
+    const float32x4_t minimum = vdupq_n_f32(-8.0f);
+    const float32x4_t maximum = vdupq_n_f32(7.0f);
     size_t i = 0;
     for (; i + 8 <= dim; i += 8) {
-        // 1. Load 8 floats
-        float32x4_t f0 = vld1q_f32((const float*)src + i);
-        float32x4_t f1 = vld1q_f32((const float*)src + i + 4);
-
-        // 2. Scale and Round to Nearest
-        int32x4_t i0 = vcvtnq_s32_f32(vmulq_f32(f0, vscale));
-        int32x4_t i1 = vcvtnq_s32_f32(vmulq_f32(f1, vscale));
-
-        // 3. Clamp to signed 4-bit range
-        i0 = vmaxq_s32(vmin, vminq_s32(vmax, i0));
-        i1 = vmaxq_s32(vmin, vminq_s32(vmax, i1));
-
-        // 4. Narrow: 32-bit (q) -> 16-bit (d)
-        int16x4_t n0 = vmovn_s32(i0);
-        int16x4_t n1 = vmovn_s32(i1);
-
-        // 5. Narrow: 16-bit (d) -> 8-bit (d)
-        // We use vmovn_s16 on a 128-bit combination to get our 8 bytes
-        int8x8_t combined8 = vmovn_s16(vcombine_s16(n0, n1));
-         
-        // 6. Store to temp to handle the nibble packing
-        // Using uint8x8_t to be safe for the bitwise ops later
-        uint8_t raw[8];
-        vst1_u8(raw, vreinterpret_u8_s8(combined8));
-
-        // Store as two 4-bit signed nibbles: out[0] = (val1 << 4) | val0
-        out[i/2]   = (raw[0] & 0x0F) | (raw[1] << 4);
-        out[i/2+1] = (raw[2] & 0x0F) | (raw[3] << 4);
-        out[i/2+2] = (raw[4] & 0x0F) | (raw[5] << 4);
-        out[i/2+3] = (raw[6] & 0x0F) | (raw[7] << 4);
+        float32x4_t a = vmulq_f32(vld1q_f32(src + i), scale);
+        float32x4_t b = vmulq_f32(vld1q_f32(src + i + 4), scale);
+        a = vmaxq_f32(minimum, vminq_f32(maximum, a));
+        b = vmaxq_f32(minimum, vminq_f32(maximum, b));
+        const int32x4_t qa = vcvtaq_s32_f32(a); // nearest, ties away
+        const int32x4_t qb = vcvtaq_s32_f32(b);
+        alignas(16) int32_t lanes[8];
+        vst1q_s32(lanes, qa);
+        vst1q_s32(lanes + 4, qb);
+        for (size_t j = 0; j < 8; j += 2)
+            out[(i + j) / 2] = uint8_t((lanes[j] & 15) | ((lanes[j + 1] & 15) << 4));
     }
-    
-    // Remainder handling...
-    for (; i < dim; i += 2) {
-        auto q = [&](float val) {
-            int8_t v = (int8_t)std::round(val * 64.0f);
-            return (int)std::max(-8, std::min(7, (int)v));
-        };
-        int q0 = q(src[i]);
-        int q1 = (i + 1 < dim) ? q(src[i + 1]) : 0;
-        out[i / 2] = (uint8_t)((q1 & 0x0F) << 4) | (uint8_t)(q0 & 0x0F);
-    }
+    if (i < dim)
+        pack_int4_to(src + i, out + i / 2, dim - i);
+}
 #endif
-}
 
-#ifdef AVX
-
+#if defined(__AVX2__)
 template<typename T>
-inline void pack_int4_avx2(const T* src, uint8_t* out, size_t dim) {
-    __m256 vscale = _mm256_set1_ps(64.0f);
-    
+static void pack_int4_avx2(const T* src, uint8_t* out, size_t dim) {
+    static_assert(std::is_same_v<T, float>, "AVX2 INT4 requires float input");
+    const __m256 scale = _mm256_set1_ps(64.0f);
+    const __m256 minimum = _mm256_set1_ps(-8.0f);
+    const __m256 maximum = _mm256_set1_ps(7.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    const __m256 zero = _mm256_setzero_ps();
     size_t i = 0;
-    for (; i + 16 <= dim; i += 16) {
-        // Load and Scale
-        __m256 f0 = _mm256_loadu_ps((const float*)src + i);
-        __m256 f1 = _mm256_loadu_ps((const float*)src + i + 8);
-        
-        // Convert to Int32 with rounding
-        __m256i i0 = _mm256_cvtps_epi32(_mm256_mul_ps(f0, vscale));
-        __m256i i1 = _mm256_cvtps_epi32(_mm256_mul_ps(f1, vscale));
-
-        // Pack 32-bit -> 16-bit (Saturating)
-        __m256i p16 = _mm256_packs_epi32(i0, i1);
-        
-        // Pack 16-bit -> 8-bit (Saturating)
-        __m256i p8 = _mm256_packs_epi16(p16, p16); 
-
-        // Fix AVX2 lane permutation and Extract low 128-bit
-        __m128i final8 = _mm_castps_si128(_mm256_extractf128_ps(_mm256_castsi256_ps(_mm256_permute4x64_epi64(p8, 0xD8)), 0));
-
-        // Mask and Shift to create nibbles
-        alignas(16) int8_t raw[16];
-        _mm_storeu_si128((__m128i*)raw, final8);
-
-        for(int j=0; j<8; ++j) {
-            out[(i/2) + j] = (raw[j*2] & 0x0F) | (raw[j*2+1] << 4);
-        }
+    for (; i + 8 <= dim; i += 8) {
+        __m256 scaled = _mm256_mul_ps(_mm256_loadu_ps(src + i), scale);
+        scaled = _mm256_max_ps(minimum, _mm256_min_ps(maximum, scaled));
+        // CVTT rounds toward zero; +/-0.5 implements std::round ties-away.
+        const __m256 negative = _mm256_cmp_ps(scaled, zero, _CMP_LT_OQ);
+        const __m256 bias = _mm256_blendv_ps(half, _mm256_sub_ps(zero, half), negative);
+        const __m256i q = _mm256_cvttps_epi32(_mm256_add_ps(scaled, bias));
+        alignas(32) int32_t lanes[8];
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(lanes), q);
+        for (size_t j = 0; j < 8; j += 2)
+            out[(i + j) / 2] = uint8_t((lanes[j] & 15) | ((lanes[j + 1] & 15) << 4));
     }
-    // ... scalar fallback ...
+    if (i < dim)
+        pack_int4_to(src + i, out + i / 2, dim - i);
 }
-
-#endif /* AVX */
-
-
-
+#endif
 
 template<typename T>
 inline void pack_int8_to_neon(const T* src, uint8_t* out, size_t dim) {
